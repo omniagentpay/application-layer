@@ -147,17 +147,55 @@ class OmniAgentPaymentClient(AbstractPaymentClient):
         amount: str, 
         currency: str = "USD"
     ) -> Dict[str, Any]:
+        # Execute payment with wait_for_completion to get blockchain tx_hash
         result = await self._client.pay(
             wallet_id=from_wallet_id,
             recipient=to_address,
             amount=amount,
-            currency=currency
+            currency=currency,
+            wait_for_completion=True,  # CRITICAL: Wait for on-chain confirmation
+            timeout_seconds=120,  # Wait up to 2 minutes for blockchain confirmation
         )
-        # Fix: Use correct attributes for PaymentResult
+        
+        # Get the blockchain transaction hash
+        # PaymentResult has: transaction_id (Circle ID) and blockchain_tx (on-chain hash)
+        tx_hash = result.blockchain_tx
+        transfer_id = result.transaction_id
+        
+        logger.info("execute_payment_result", 
+                   success=result.success,
+                   status=result.status,
+                   transfer_id=transfer_id,
+                   tx_hash=tx_hash,
+                   amount=str(result.amount))
+        
+        # If we didn't get the tx_hash, try to poll for it
+        if result.success and not tx_hash and transfer_id:
+            logger.info("polling_for_tx_hash", transfer_id=transfer_id)
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                # Try to get transaction details to get the tx_hash
+                for attempt in range(10):  # Try up to 10 times with 3 second intervals
+                    await asyncio.sleep(3)
+                    try:
+                        tx_info = await loop.run_in_executor(
+                            None,
+                            lambda: self._client._circle_client.get_transaction(transfer_id)
+                        )
+                        if tx_info and tx_info.tx_hash:
+                            tx_hash = tx_info.tx_hash
+                            logger.info("got_tx_hash_from_poll", tx_hash=tx_hash, attempt=attempt+1)
+                            break
+                    except Exception as poll_error:
+                        logger.warning("poll_tx_hash_error", error=str(poll_error), attempt=attempt+1)
+            except Exception as e:
+                logger.warning("tx_hash_polling_failed", error=str(e))
+        
         return {
-            "transfer_id": result.transaction_id,
-            "status": result.status,
-            "tx_hash": result.blockchain_tx,
+            "transfer_id": transfer_id,
+            "status": result.status.value if hasattr(result.status, 'value') else str(result.status),
+            "tx_hash": tx_hash,
             "amount": str(result.amount)
         }
 

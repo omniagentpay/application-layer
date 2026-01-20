@@ -1024,6 +1024,17 @@ paymentsRouter.get('/:id/sync', async (req, res) => {
     });
   }
 
+  // If intent has a blockchain txHash (starts with 0x) and succeeded status, it's already confirmed
+  const isBlockchainHash = intent.txHash && (intent.txHash.startsWith('0x') || /^[0-9a-fA-F]{64}$/.test(intent.txHash));
+  if (isBlockchainHash && intent.status === 'succeeded') {
+    return res.json({
+      transactionStatus: 'confirmed',
+      circleStatus: 'confirmed',
+      intent,
+      lastUpdated: new Date().toISOString(),
+    });
+  }
+
   try {
     const { callMcp } = await import('../lib/mcp-client.js');
 
@@ -1058,7 +1069,7 @@ paymentsRouter.get('/:id/sync', async (req, res) => {
         intent.txHash = blockchainTxHash;
 
         // Generate explorer URL for Arc Testnet
-        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://explorer.testnet.arc.network/tx/';
+        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx/';
         const explorerUrl = `${explorerBase}${blockchainTxHash}`;
 
         // Update metadata with explorer URL

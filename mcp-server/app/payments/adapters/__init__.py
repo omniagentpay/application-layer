@@ -256,7 +256,7 @@ class X402Adapter:
             
             # 5. Build explorer URL (Arc Testnet)
             tx_hash = execution_result.get('transfer_id', '')
-            explorer_url = f"https://explorer.testnet.arc.network/tx/{tx_hash}"
+            explorer_url = f"https://testnet.arcscan.app/tx/{tx_hash}"
             
             # 6. Return structured receipt
             receipt = {

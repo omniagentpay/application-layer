@@ -26,7 +26,7 @@ const ARC_TESTNET = {
   blockExplorers: {
     default: {
       name: 'ARC Explorer',
-      url: 'https://explorer.testnet.arc.network',
+      url: 'https://testnet.arcscan.app',
     },
   },
   testnet: true,

@@ -152,7 +152,7 @@ export default function AgentWalletManagementPage() {
     });
 
     // Open Arc Explorer for reference
-    window.open(`https://explorer.testnet.arc.network/address/${agentWallet.address}`, '_blank');
+    window.open(`https://testnet.arcscan.app/address/${agentWallet.address}`, '_blank');
   };
 
   const handleOpenFaucet = () => {

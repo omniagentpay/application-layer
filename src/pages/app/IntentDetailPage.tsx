@@ -72,6 +72,14 @@ export default function IntentDetailPage() {
     const data = await paymentsService.getIntent(id);
     setIntent(data);
 
+    // Auto-detect confirmed status if intent has blockchain txHash and succeeded status
+    if (data?.txHash && data.status === 'succeeded') {
+      const isBlockchainHash = data.txHash.startsWith('0x') || /^[0-9a-fA-F]{64}$/.test(data.txHash);
+      if (isBlockchainHash) {
+        setVerificationStatus('confirmed');
+      }
+    }
+
     // Load agent if available
     if (data?.agentId) {
       try {

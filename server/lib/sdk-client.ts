@@ -105,23 +105,34 @@ export async function executePayment(intentId: string, intentData?: {
         to_address: intentData.recipientAddress,
         amount: intentData.amount.toString(),
         currency: intentData.currency || 'USD',
-      }) as { status: string; payment_id?: string; transaction_id?: string; transfer_id?: string; blockchain_tx?: string; message?: string; error?: string };
+      }) as {
+        status: string;
+        payment_id?: string;
+        transaction_id?: string;
+        transfer_id?: string;
+        blockchain_tx?: string;
+        tx_hash?: string;  // Added: blockchain transaction hash from SDK
+        message?: string;
+        error?: string
+      };
 
-      console.log('[executePayment] MCP result:', result);
+      console.log('[executePayment] MCP result:', JSON.stringify(result, null, 2));
 
       // Parse MCP response
       if (result.status === 'success') {
         // PHASE 2: Extract all execution artifacts
-        // Map MCP response fields to execution artifacts
-        const txHash = result.blockchain_tx || result.tx_hash || result.transaction_id || undefined;
+        // Priority order for tx_hash: tx_hash > blockchain_tx > (NOT transfer_id, that's Circle internal)
+        const txHash = result.tx_hash || result.blockchain_tx || undefined;
         const circleTransferId = result.transfer_id || result.payment_id || undefined;
         const circleTransactionId = result.transaction_id || result.transfer_id || result.payment_id || undefined;
 
         // Generate explorer URL if we have a valid blockchain tx hash (starts with 0x)
-        // Don't generate for UUIDs (payment_ids) - those need to be resolved to blockchain hashes later
-        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://explorer.testnet.arc.network/tx/';
+        // Don't generate for UUIDs (transfer_ids) - those are Circle internal IDs
+        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx/';
         const isValidBlockchainHash = txHash && (txHash.startsWith('0x') || txHash.match(/^[0-9a-fA-F]{64}$/));
         const explorerUrl = isValidBlockchainHash ? `${explorerBase}${txHash}` : undefined;
+
+        console.log('[executePayment] Parsed result:', { txHash, circleTransferId, explorerUrl, isValidBlockchainHash });
 
         return {
           success: true,
