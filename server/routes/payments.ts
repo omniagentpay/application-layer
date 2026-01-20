@@ -1,0 +1,1203 @@
+import { Router } from 'express';
+import { storage } from '../lib/storage.js';
+import { checkGuards, requiresApproval } from '../lib/guards.js';
+import { simulatePayment, executePayment } from '../lib/sdk-client.js';
+import { getAgentWalletId, validateWalletRole } from '../lib/agent-wallet.js';
+import type {
+  PaymentIntent,
+  PaymentStep,
+  TimelineEvent,
+  PaymentExplanation,
+  WhatIfSimulationParams,
+  WhatIfSimulationResult,
+  IncidentReplayResult,
+  McpSdkContract,
+  WalletRef,
+} from '../types/index.js';
+
+export const paymentsRouter = Router();
+
+// Get all payment intents
+paymentsRouter.get('/', async (req, res) => {
+  try {
+    // Extract Privy user ID from headers
+    const privyUserId = req.headers['x-privy-user-id'] as string;
+
+    console.log('[GET /api/payments] Request received, privyUserId:', privyUserId);
+
+    // Get intents from in-memory storage
+    let intents = storage.getAllPaymentIntents();
+
+    console.log('[GET /api/payments] Total intents in-memory:', intents.length);
+
+    // ALWAYS load from Supabase first - this is the source of truth for persistence
+    try {
+      const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+      console.log('[GET /api/payments] Supabase config:', {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseKey,
+        urlPrefix: supabaseUrl?.substring(0, 30)
+      });
+
+      if (supabaseUrl && supabaseKey) {
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabase = createClient(
+          supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+          supabaseKey
+        );
+
+        // First, get ALL intents to see what's in the database (for debugging)
+        const { data: allIntents, error: allError } = await supabase
+          .from('payment_intents')
+          .select('id, user_id, status, created_at')
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        console.log('[GET /api/payments] ALL intents in DB (up to 20):', {
+          count: allIntents?.length || 0,
+          error: allError?.message,
+          intents: allIntents?.map(i => ({ id: i.id, user_id: i.user_id?.substring(0, 20), status: i.status }))
+        });
+
+        // Build query for payment intents - TEMPORARILY fetch ALL to debug
+        let query = supabase
+          .from('payment_intents')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        // TEMPORARILY DISABLED: User filtering to debug missing intents
+        // TODO: Re-enable after debugging
+        const ENABLE_USER_FILTER = false;
+
+        if (ENABLE_USER_FILTER && privyUserId && privyUserId !== 'unknown') {
+          // First get the Supabase user ID from privy_user_id
+          const { data: user } = await supabase
+            .from('users')
+            .select('id')
+            .eq('privy_user_id', privyUserId)
+            .maybeSingle();
+
+          if (user) {
+            query = query.eq('user_id', user.id);
+            console.log('[GET /api/payments] Filtering by Supabase user_id:', user.id);
+          } else {
+            // User not found in Supabase - also try with privy_user_id directly in case it was stored that way
+            query = query.or(`user_id.eq.${privyUserId},user_id.eq.unknown`);
+            console.log('[GET /api/payments] User not found, trying privy_user_id directly');
+          }
+        } else {
+          console.log('[GET /api/payments] Fetching ALL intents (user filter disabled for debugging)');
+        }
+
+        const { data: supabaseIntents, error } = await query;
+
+        if (error) {
+          console.error('[GET /api/payments] Supabase query error:', error);
+        } else if (supabaseIntents && supabaseIntents.length > 0) {
+          console.log('[GET /api/payments] Found', supabaseIntents.length, 'intents in Supabase');
+
+          // Transform Supabase data to PaymentIntent format
+          const transformedIntents: PaymentIntent[] = supabaseIntents.map((intent: any) => {
+            const metadata = intent.metadata || {};
+
+            // Fix timezone: Supabase returns timestamps without 'Z' suffix
+            // which causes JS to parse them as local time instead of UTC
+            const fixTimestamp = (ts: string | null | undefined): string => {
+              if (!ts) return new Date().toISOString();
+              // If timestamp doesn't end with 'Z' or timezone offset, add 'Z'
+              const trimmed = ts.trim();
+              if (trimmed.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(trimmed)) {
+                return new Date(trimmed).toISOString();
+              }
+              // Replace space with 'T' and add 'Z' for UTC
+              return new Date(trimmed.replace(' ', 'T') + 'Z').toISOString();
+            };
+
+            return {
+              id: intent.id,
+              amount: parseFloat(intent.amount || 0),
+              currency: intent.currency || 'USDC',
+              recipient: intent.recipient || '',
+              recipientAddress: intent.recipient_address || '',
+              description: metadata.description || intent.description || '',
+              status: intent.status || 'pending',
+              walletId: intent.wallet_id || '',
+              chain: (intent.chain || 'ethereum') as PaymentIntent['chain'],
+              agentId: metadata.agentId || undefined,
+              agentName: metadata.agentName || undefined,
+              steps: typeof intent.steps === 'string' ? JSON.parse(intent.steps) : (intent.steps || []),
+              guardResults: typeof intent.guard_results === 'string' ? JSON.parse(intent.guard_results) : (intent.guard_results || []),
+              route: intent.route || undefined,
+              txHash: intent.tx_hash || intent.blockchain_tx_hash || undefined,
+              intentType: metadata.intentType || undefined,
+              recipientWalletType: metadata.recipientWalletType || undefined,
+              paymentLink: metadata.paymentLink || undefined,
+              fromWallet: metadata.fromWallet || undefined,
+              contract: metadata.contract || undefined,
+              timeline: metadata.timeline || undefined,
+              explanation: metadata.explanation || undefined,
+              metadata: metadata,
+              createdAt: fixTimestamp(intent.created_at),
+              updatedAt: fixTimestamp(intent.updated_at || intent.created_at),
+            };
+          });
+
+          // Merge Supabase intents with in-memory intents
+          // Supabase takes precedence since it's persistent
+          const intentMap = new Map<string, PaymentIntent>();
+
+          // Add in-memory intents first
+          intents.forEach(intent => intentMap.set(intent.id, intent));
+
+          // Overwrite with Supabase intents (they're the source of truth)
+          transformedIntents.forEach(intent => {
+            intentMap.set(intent.id, intent);
+            // Also add to in-memory storage for future lookups
+            storage.savePaymentIntent(intent);
+          });
+
+          intents = Array.from(intentMap.values());
+          console.log('[GET /api/payments] Total intents after merge:', intents.length);
+        } else {
+          console.log('[GET /api/payments] No intents found in Supabase');
+        }
+      } else {
+        console.warn('[GET /api/payments] Supabase not configured, using in-memory only');
+      }
+    } catch (error) {
+      console.error('[GET /api/payments] Failed to load from Supabase:', error);
+      // Continue with in-memory intents if Supabase fails
+    }
+
+    // Sort by creation date (newest first)
+    intents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    res.json(intents);
+  } catch (error) {
+    console.error('[GET /api/payments] Error:', error);
+    res.status(500).json({ error: 'Failed to load payment intents' });
+  }
+});
+
+// Get a specific payment intent
+paymentsRouter.get('/:id', (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+  res.json(intent);
+});
+
+// Payment link page route (public-facing payment page)
+paymentsRouter.get('/pay/:id', (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  // Check if it's a payment link
+  if (intent.intentType !== 'payment_link') {
+    return res.status(400).json({ error: 'This is not a payment link' });
+  }
+
+  // Check if expired
+  if (intent.paymentLink?.expiresAt && Date.now() > intent.paymentLink.expiresAt) {
+    return res.status(410).json({ error: 'Payment link has expired' });
+  }
+
+  // Return payment link data (frontend will render the payment page)
+  res.json({
+    intent,
+    paymentUrl: intent.paymentLink?.url || `/app/pay/${intent.id}`,
+  });
+});
+
+// Create a new payment intent
+paymentsRouter.post('/', async (req, res) => {
+  const {
+    amount,
+    recipient,
+    recipientAddress,
+    description,
+    walletId,
+    chain,
+    intentType,
+    recipientWalletType,
+    paymentLink,
+    fromWallet, // NEW: Explicit wallet role and type
+  } = req.body;
+
+  if (!amount || !recipient || !recipientAddress || !chain) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // Extract Privy user ID from headers for persistence
+  const privyUserId = req.headers['x-privy-user-id'] as string;
+
+  console.log('[POST /api/payments] Creating intent, privyUserId:', privyUserId || 'NOT SET (will use "unknown")');
+
+  // Get or create a default agent
+  const agents = storage.getAllAgents();
+  const defaultAgent = agents.length > 0 ? agents[0] : null;
+
+  // Determine wallet role and type
+  let walletRole: 'agent' | 'user' = 'user';
+  let walletType: 'circle' | 'privy' = 'privy';
+  let walletRef: string = walletId || '';
+
+  // If fromWallet is provided, use it
+  if (fromWallet && fromWallet.role && fromWallet.type && fromWallet.ref) {
+    walletRole = fromWallet.role;
+    walletType = fromWallet.type;
+    walletRef = fromWallet.ref;
+  } else {
+    // Infer from context: if agentId is present, it's an agent payment
+    if (defaultAgent?.id) {
+      walletRole = 'agent';
+      walletType = 'circle';
+      // Use agent Circle wallet for agent payments
+      const agentWalletId = getAgentWalletId();
+      if (!agentWalletId) {
+        return res.status(500).json({
+          error: 'Agent wallet not configured',
+          message: 'AGENT_CIRCLE_WALLET_ID not set. Run setup_agent_wallet.py script first.',
+        });
+      }
+      walletRef = agentWalletId;
+    } else {
+      // User payment - check if walletId is Privy address or Circle ID
+      if (walletId) {
+        walletRef = walletId;
+        // Detect wallet type from format
+        if (walletId.match(/^0x[a-fA-F0-9]{40}$/)) {
+          walletType = 'privy';
+        } else {
+          walletType = 'circle';
+        }
+      }
+    }
+  }
+
+  // Validate wallet role and type combination
+  const validation = validateWalletRole(walletRole, walletType, walletRef);
+  if (!validation.valid) {
+    return res.status(400).json({
+      error: 'Invalid wallet configuration',
+      message: validation.error,
+    });
+  }
+
+  const fromWalletRef: WalletRef = {
+    role: walletRole,
+    type: walletType,
+    ref: walletRef,
+  };
+
+  const intentId = `pi_${Date.now()}`;
+  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+  // Generate payment link URL if it's a payment link
+  let paymentLinkData = paymentLink;
+  if (intentType === 'payment_link' && !paymentLinkData?.url) {
+    paymentLinkData = {
+      url: `${baseUrl}/app/pay/${intentId}`,
+      expiresAt: paymentLink?.expiresAt,
+      metadata: paymentLink?.metadata,
+    };
+  }
+
+  const intent: PaymentIntent = {
+    id: intentId,
+    amount: parseFloat(amount),
+    currency: 'USDC',
+    recipient,
+    recipientAddress,
+    description: description || '',
+    status: 'pending',
+    walletId: walletRef, // Keep for backward compatibility
+    fromWallet: fromWalletRef, // NEW: Explicit wallet role and type
+    chain: chain as PaymentIntent['chain'],
+    intentType: intentType || 'direct',
+    recipientWalletType: recipientWalletType || 'privy', // Keep for backward compatibility
+    paymentLink: paymentLinkData,
+    steps: [
+      { id: 's1', name: 'Simulation', status: 'pending' },
+      { id: 's2', name: 'Approval', status: 'pending' },
+      { id: 's3', name: 'Execution', status: 'pending' },
+      { id: 's4', name: 'Confirmation', status: 'pending' },
+    ],
+    guardResults: [],
+    agentId: defaultAgent?.id,
+    agentName: defaultAgent?.name,
+    metadata: {
+      userId: privyUserId || 'unknown', // Add userId for Supabase persistence
+    },
+    contract: {
+      backendApiCall: {
+        method: 'POST',
+        endpoint: `/api/payments`,
+        payload: { amount, recipient, recipientAddress, description, walletId, chain, intentType },
+      },
+      mcpToolInvoked: {
+        toolName: intentType === 'payment_link' ? 'create_payment_link' : 'create_payment_intent',
+        toolId: 'mcp_tool_payment',
+        input: { amount: parseFloat(amount), recipient, chain },
+      },
+      sdkMethodCalled: {
+        method: 'simulate',
+        params: { amount: parseFloat(amount), recipientAddress, chain },
+      },
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  storage.savePaymentIntent(intent);
+  res.status(201).json(intent);
+});
+
+// Update payment intent (for payment link URL updates)
+paymentsRouter.patch('/:id', (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  // Update payment link if provided
+  if (req.body.paymentLink) {
+    intent.paymentLink = { ...intent.paymentLink, ...req.body.paymentLink };
+  }
+
+  // Update other fields
+  if (req.body.status) intent.status = req.body.status;
+  if (req.body.txHash) intent.txHash = req.body.txHash;
+
+  intent.updatedAt = new Date().toISOString();
+  storage.savePaymentIntent(intent);
+
+  res.json(intent);
+});
+
+// Simulate a payment intent
+paymentsRouter.post('/:id/simulate', async (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  // Update status
+  intent.status = 'simulating';
+  intent.steps[0].status = 'in_progress';
+  intent.updatedAt = new Date().toISOString();
+  storage.savePaymentIntent(intent);
+
+  try {
+    // Call SDK to simulate
+    const simulateResult = await simulatePayment({
+      amount: intent.amount,
+      recipient: intent.recipient,
+      recipientAddress: intent.recipientAddress,
+      walletId: intent.walletId,
+      chain: intent.chain,
+    });
+
+    // Check guards
+    const guardResults = await checkGuards(intent);
+    intent.guardResults = guardResults;
+
+    // Update steps
+    intent.steps[0].status = 'completed';
+    intent.steps[0].timestamp = new Date().toISOString();
+
+    // Determine if approval is needed
+    const needsApproval = requiresApproval(intent, guardResults);
+    const allGuardsPassed = guardResults.every(r => r.passed);
+
+    if (!allGuardsPassed) {
+      intent.status = 'blocked';
+      intent.steps[1].status = 'failed';
+      intent.steps[1].details = 'Blocked by guard checks';
+    } else if (needsApproval) {
+      intent.status = 'awaiting_approval';
+      intent.steps[1].status = 'in_progress';
+    } else {
+      // Auto-approve if below threshold
+      intent.status = 'awaiting_approval';
+      intent.steps[1].status = 'completed';
+      intent.steps[1].timestamp = new Date().toISOString();
+    }
+
+    intent.route = simulateResult.route;
+    intent.updatedAt = new Date().toISOString();
+    storage.savePaymentIntent(intent);
+
+    res.json({
+      success: true,
+      estimatedFee: simulateResult.estimatedFee,
+      guardResults: intent.guardResults,
+      route: intent.route,
+      requiresApproval: needsApproval,
+    });
+  } catch (error) {
+    intent.status = 'failed';
+    intent.steps[0].status = 'failed';
+    intent.steps[0].details = error instanceof Error ? error.message : 'Simulation failed';
+    intent.updatedAt = new Date().toISOString();
+    storage.savePaymentIntent(intent);
+
+    res.status(500).json({ error: 'Simulation failed', details: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+// Approve a payment intent
+paymentsRouter.post('/:id/approve', async (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  if (intent.status !== 'awaiting_approval' && intent.status !== 'requires_approval') {
+    return res.status(400).json({ error: 'Intent is not awaiting approval' });
+  }
+
+  intent.steps[1].status = 'completed';
+  intent.steps[1].timestamp = new Date().toISOString();
+  intent.status = 'approved';
+  intent.updatedAt = new Date().toISOString();
+  storage.savePaymentIntent(intent);
+
+  res.json({
+    intentId: intent.id,
+    status: intent.status,
+    approvedAt: intent.updatedAt
+  });
+});
+
+// Execute a payment intent
+paymentsRouter.post('/:id/execute', async (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  if (intent.status !== 'executing' && intent.status !== 'awaiting_approval' && intent.status !== 'approved' && intent.status !== 'requires_approval') {
+    return res.status(400).json({ error: 'Intent is not ready for execution' });
+  }
+
+  // If not already executing, update status
+  if (intent.status === 'awaiting_approval' || intent.status === 'requires_approval' || intent.status === 'approved') {
+    if (intent.status !== 'approved') {
+      intent.steps[1].status = 'completed';
+      intent.steps[1].timestamp = new Date().toISOString();
+    }
+    intent.status = 'executing';
+    intent.steps[2].status = 'in_progress';
+  }
+
+  intent.updatedAt = new Date().toISOString();
+  storage.savePaymentIntent(intent);
+
+  try {
+    // Get wallet role and type from intent
+    // Support both new fromWallet field and legacy fields
+    const fromWallet = intent.fromWallet || {
+      role: intent.agentId ? 'agent' : 'user' as 'agent' | 'user',
+      type: (intent.walletId?.match(/^0x[a-fA-F0-9]{40}$/) ? 'privy' : 'circle') as 'circle' | 'privy',
+      ref: intent.walletId || '',
+    };
+
+    // Enforce wallet role rules
+    if (fromWallet.role === 'agent' && fromWallet.type !== 'circle') {
+      intent.status = 'failed';
+      intent.steps[2].status = 'failed';
+      intent.steps[2].details = 'Autonomous payments require a Circle Wallet. Privy wallets require human interaction and cannot be used for agent execution.';
+      intent.updatedAt = new Date().toISOString();
+      storage.savePaymentIntent(intent);
+
+      return res.status(400).json({
+        error: 'Invalid wallet configuration for agent payment',
+        message: 'Autonomous payments require a Circle Wallet. Privy wallets require human interaction and cannot be used for agent execution.',
+      });
+    }
+
+    // Route execution based on wallet role and type
+    if (fromWallet.role === 'agent' && fromWallet.type === 'circle') {
+      // AGENT + CIRCLE → Autonomous execution via Circle SDK
+      const executeResult = await executePayment(intent.id, {
+        walletId: fromWallet.ref, // Use Circle wallet ID
+        recipientAddress: intent.recipientAddress,
+        amount: intent.amount,
+        currency: intent.currency,
+      });
+
+      if (executeResult.success) {
+        // PHASE 2: Store execution artifacts
+        // Note: txHash may be undefined if blockchain transaction is still processing
+        intent.txHash = executeResult.txHash;
+        // Store explorer URL and other artifacts in metadata for frontend access
+        if (!intent.metadata) {
+          intent.metadata = {};
+        }
+        intent.metadata.explorerUrl = executeResult.explorerUrl;
+        intent.metadata.circleTransferId = executeResult.circleTransferId;
+        intent.metadata.circleTransactionId = executeResult.circleTransactionId;
+        intent.metadata.blockchainTxHash = executeResult.txHash;
+        intent.steps[2].status = 'completed';
+        intent.steps[2].timestamp = new Date().toISOString();
+        intent.steps[3].status = 'completed';
+        intent.steps[3].timestamp = new Date().toISOString();
+        intent.status = 'succeeded';
+        intent.updatedAt = new Date().toISOString();
+        storage.savePaymentIntent(intent);
+
+        // PHASE 2: Persist execution artifacts to Supabase
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`, supabaseKey);
+
+            // Update payment_intents table with execution artifacts
+            await supabase
+              .from('payment_intents')
+              .update({
+                blockchain_tx_hash: executeResult.txHash,
+                circle_transfer_id: executeResult.circleTransferId,
+                circle_transaction_id: executeResult.circleTransactionId,
+                explorer_url: executeResult.explorerUrl,
+                executed_at: new Date().toISOString(),
+                status: 'succeeded',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', intent.id);
+
+            // Insert into execution_artifacts for audit trail
+            await supabase
+              .from('execution_artifacts')
+              .insert({
+                intent_id: intent.id,
+                circle_wallet_id: fromWallet.ref,
+                recipient_address: intent.recipientAddress,
+                amount: intent.amount,
+                currency: intent.currency,
+                circle_transfer_id: executeResult.circleTransferId,
+                circle_transaction_id: executeResult.circleTransactionId,
+                blockchain_tx_hash: executeResult.txHash,
+                explorer_url: executeResult.explorerUrl,
+                status: 'succeeded',
+              });
+          }
+        } catch (dbError) {
+          console.error('[Payment Execution] Failed to persist artifacts to Supabase:', dbError);
+          // Continue - execution was successful even if DB write failed
+        }
+
+        // Create transaction record (only if we have a txHash)
+        if (executeResult.txHash) {
+          const transaction = {
+            id: `tx_${Date.now()}`,
+            intentId: intent.id,
+            walletId: fromWallet.ref,
+            type: 'payment' as const,
+            amount: intent.amount,
+            currency: intent.currency,
+            recipient: intent.recipient,
+            recipientAddress: intent.recipientAddress,
+            status: 'succeeded' as const,
+            chain: intent.chain,
+            txHash: executeResult.txHash,
+            fee: 0.5, // TODO: Get actual fee from SDK
+            createdAt: new Date().toISOString(),
+          };
+          storage.saveTransaction(transaction);
+        }
+
+        // PHASE 2: Return enhanced response with all execution artifacts
+        return res.json({
+          success: true,
+          txHash: executeResult.txHash,
+          explorerUrl: executeResult.explorerUrl,
+          circleTransferId: executeResult.circleTransferId,
+          circleTransactionId: executeResult.circleTransactionId,
+          message: 'Payment executed successfully',
+          intent
+        });
+      } else {
+        // PHASE 2: Store error in Supabase
+        intent.status = 'failed';
+        intent.steps[2].status = 'failed';
+        intent.steps[2].details = executeResult.error || 'Execution failed';
+        intent.updatedAt = new Date().toISOString();
+        storage.savePaymentIntent(intent);
+
+        // PHASE 2: Persist failure to Supabase
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`, supabaseKey);
+            await supabase
+              .from('payment_intents')
+              .update({
+                status: 'failed',
+                last_error: executeResult.error,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', intent.id);
+          }
+        } catch (dbError) {
+          console.error('[Payment Execution] Failed to persist error to Supabase:', dbError);
+        }
+
+        console.error('[Payment Execution] Failed:', executeResult.error);
+        return res.status(500).json({
+          error: 'Execution failed',
+          details: executeResult.error,
+          message: executeResult.error
+        });
+      }
+    } else if (fromWallet.role === 'user' && fromWallet.type === 'privy') {
+      // USER + PRIVY → Requires frontend signing
+      intent.status = 'awaiting_user_signature';
+      intent.steps[2].status = 'pending';
+      intent.steps[2].details = 'Waiting for user to sign transaction with Privy wallet';
+      intent.updatedAt = new Date().toISOString();
+      storage.savePaymentIntent(intent);
+
+      return res.json({
+        success: true,
+        requiresFrontendSigning: true,
+        message: 'Payment requires user signature. Please sign the transaction with your Privy wallet.',
+        intent
+      });
+    } else {
+      // USER + CIRCLE → Also allowed (for automated user payments)
+      const executeResult = await executePayment(intent.id, {
+        walletId: fromWallet.ref,
+        recipientAddress: intent.recipientAddress,
+        amount: intent.amount,
+        currency: intent.currency,
+      });
+
+      if (executeResult.success) {
+        intent.txHash = executeResult.txHash;
+        intent.steps[2].status = 'completed';
+        intent.steps[2].timestamp = new Date().toISOString();
+        intent.steps[3].status = 'completed';
+        intent.steps[3].timestamp = new Date().toISOString();
+        intent.status = 'succeeded';
+        intent.updatedAt = new Date().toISOString();
+        storage.savePaymentIntent(intent);
+
+        const transaction = {
+          id: `tx_${Date.now()}`,
+          intentId: intent.id,
+          walletId: fromWallet.ref,
+          type: 'payment' as const,
+          amount: intent.amount,
+          currency: intent.currency,
+          recipient: intent.recipient,
+          recipientAddress: intent.recipientAddress,
+          status: 'succeeded' as const,
+          chain: intent.chain,
+          txHash: executeResult.txHash,
+          fee: 0.5,
+          createdAt: new Date().toISOString(),
+        };
+        storage.saveTransaction(transaction);
+
+        return res.json({ success: true, txHash: executeResult.txHash, intent });
+      } else {
+        intent.status = 'failed';
+        intent.steps[2].status = 'failed';
+        intent.steps[2].details = executeResult.error || 'Execution failed';
+        intent.updatedAt = new Date().toISOString();
+        storage.savePaymentIntent(intent);
+
+        return res.status(500).json({
+          error: 'Execution failed',
+          details: executeResult.error,
+          message: executeResult.error
+        });
+      }
+    }
+
+  } catch (error) {
+    intent.status = 'failed';
+    intent.steps[2].status = 'failed';
+    const errorMessage = error instanceof Error ? error.message : 'Execution failed';
+    intent.steps[2].details = errorMessage;
+    intent.updatedAt = new Date().toISOString();
+    storage.savePaymentIntent(intent);
+
+    console.error('[Payment Execution] Exception:', error);
+    res.status(500).json({
+      error: 'Execution failed',
+      details: errorMessage,
+      message: errorMessage
+    });
+  }
+});
+
+// Get payment timeline
+paymentsRouter.get('/:id/timeline', (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  // Generate timeline from intent data
+  const timeline: TimelineEvent[] = [];
+  const now = new Date();
+
+  if (intent.agentId && intent.agentName) {
+    timeline.push({
+      id: 'tl_1',
+      type: 'agent_action',
+      timestamp: intent.createdAt,
+      title: 'Agent initiated payment',
+      description: `${intent.agentName} initiated a payment request`,
+      status: 'success',
+      details: {
+        agentId: intent.agentId,
+        agentName: intent.agentName,
+      },
+    });
+  }
+
+  if (intent.contract?.mcpToolInvoked) {
+    timeline.push({
+      id: 'tl_2',
+      type: 'tool_invocation',
+      timestamp: intent.createdAt,
+      title: 'Tool invoked',
+      description: `MCP tool ${intent.contract.mcpToolInvoked.toolName} was invoked`,
+      status: 'success',
+      details: {
+        toolName: intent.contract.mcpToolInvoked.toolName,
+        toolInput: intent.contract.mcpToolInvoked.input,
+        toolOutput: intent.contract.mcpToolInvoked.output,
+      },
+    });
+  }
+
+  const simulateStep = intent.steps.find(s => s.name === 'Simulation');
+  if (simulateStep && simulateStep.status !== 'pending') {
+    timeline.push({
+      id: 'tl_3',
+      type: 'simulate',
+      timestamp: simulateStep.timestamp || intent.createdAt,
+      title: 'Payment simulation',
+      description: 'Simulated payment execution',
+      status: simulateStep.status === 'completed' ? 'success' : simulateStep.status === 'failed' ? 'failed' : 'pending',
+      details: {
+        route: intent.route,
+        estimatedFee: 0.5,
+      },
+    });
+  }
+
+  if (intent.guardResults.length > 0) {
+    intent.guardResults.forEach((guard, idx) => {
+      timeline.push({
+        id: `tl_4_${idx}`,
+        type: 'guard_evaluation',
+        timestamp: intent.updatedAt,
+        title: `Guard: ${guard.guardName}`,
+        description: guard.reason || (guard.passed ? 'Guard check passed' : 'Guard check failed'),
+        status: guard.passed ? 'success' : 'blocked',
+        details: {
+          guardId: guard.guardId,
+          guardName: guard.guardName,
+          guardResult: guard.passed,
+          guardReason: guard.reason,
+        },
+      });
+    });
+  }
+
+  const approvalStep = intent.steps.find(s => s.name === 'Approval');
+  if (approvalStep && approvalStep.status !== 'pending') {
+    timeline.push({
+      id: 'tl_5',
+      type: 'approval_decision',
+      timestamp: approvalStep.timestamp || intent.updatedAt,
+      title: 'Approval decision',
+      description: approvalStep.status === 'completed' ? 'Payment approved' : approvalStep.details || 'Awaiting approval',
+      status: approvalStep.status === 'completed' ? 'success' : approvalStep.status === 'failed' ? 'blocked' : 'pending',
+    });
+  }
+
+  const executeStep = intent.steps.find(s => s.name === 'Execution');
+  if (executeStep && executeStep.status === 'completed' && intent.txHash) {
+    timeline.push({
+      id: 'tl_6',
+      type: 'pay_execution',
+      timestamp: executeStep.timestamp || intent.updatedAt,
+      title: 'Payment executed',
+      description: `Transaction ${intent.txHash.substring(0, 10)}... confirmed`,
+      status: 'success',
+      details: {
+        txHash: intent.txHash,
+      },
+    });
+  }
+
+  res.json(timeline);
+});
+
+// Get payment explanation
+paymentsRouter.get('/:id/explanation', (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  const agent = intent.agentId ? storage.getAgent(intent.agentId) : null;
+  const allGuardsPassed = intent.guardResults.every(r => r.passed);
+  const blockingGuards = intent.guardResults.filter(r => !r.passed);
+
+  const explanation: PaymentExplanation = {
+    initiatedBy: {
+      agentId: intent.agentId || 'unknown',
+      agentName: intent.agentName || agent?.name || 'Unknown Agent',
+      toolName: intent.contract?.mcpToolInvoked?.toolName || 'payment_tool',
+      toolInput: intent.contract?.mcpToolInvoked?.input || { amount: intent.amount, recipient: intent.recipient },
+    },
+    reason: intent.description || `Payment of $${intent.amount} to ${intent.recipient}`,
+    decision: {
+      allowed: allGuardsPassed && intent.status !== 'blocked',
+      reason: allGuardsPassed
+        ? 'All guard checks passed'
+        : `Blocked by ${blockingGuards.map(g => g.guardName).join(', ')}`,
+      blockingGuards: blockingGuards.map(g => ({
+        id: g.guardId,
+        name: g.guardName,
+        reason: g.reason || 'Guard check failed',
+      })),
+    },
+    route: {
+      chosen: intent.route || 'auto',
+      explanation: intent.route === 'cctp'
+        ? 'Using Circle CCTP for cross-chain transfer'
+        : intent.route === 'gateway'
+          ? 'Using Gateway protocol for routing'
+          : 'Auto-selected optimal route',
+      estimatedTime: '2-5 minutes',
+      estimatedFee: 0.5,
+    },
+    conditions: {
+      wouldBlock: [
+        {
+          condition: 'Amount exceeds single transaction limit',
+          currentValue: `$${intent.amount}`,
+          threshold: '$2000',
+        },
+        {
+          condition: 'Daily budget exceeded',
+          currentValue: '$1500',
+          threshold: '$3000',
+        },
+      ],
+    },
+  };
+
+  res.json(explanation);
+});
+
+// What-if simulation
+paymentsRouter.post('/simulate', async (req, res) => {
+  const { amount, guardPresetId, chain, time }: WhatIfSimulationParams = req.body;
+
+  if (!amount) {
+    return res.status(400).json({ error: 'Amount is required' });
+  }
+
+  // Mock simulation logic
+  const guards = storage.getAllGuards();
+  const guardResults = guards
+    .filter(g => g.enabled)
+    .map(guard => {
+      let passed = true;
+      let reason = '';
+
+      if (guard.type === 'single_tx' && guard.config.limit && amount > guard.config.limit) {
+        passed = false;
+        reason = `Amount $${amount} exceeds single transaction limit of $${guard.config.limit}`;
+      } else if (guard.type === 'budget') {
+        // Mock: check daily budget
+        const dailySpent = 1500; // Mock value
+        const limit = guard.config.limit || 3000;
+        if (dailySpent + amount > limit) {
+          passed = false;
+          reason = `Payment would exceed daily budget of $${limit}`;
+        }
+      }
+
+      return {
+        guardId: guard.id,
+        guardName: guard.name,
+        passed,
+        reason: passed ? 'Guard check passed' : reason,
+      };
+    });
+
+  const allPassed = guardResults.every(r => r.passed);
+
+  const result: WhatIfSimulationResult = {
+    allowed: allPassed,
+    reason: allPassed
+      ? 'All guard checks would pass'
+      : `Blocked by: ${guardResults.filter(r => !r.passed).map(r => r.guardName).join(', ')}`,
+    guardResults,
+    estimatedFee: 0.5,
+    route: 'auto',
+  };
+
+  res.json(result);
+});
+
+// Incident replay
+paymentsRouter.post('/:id/replay', async (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  // Get original guard results
+  const originalResults = intent.guardResults;
+
+  // Re-evaluate with current guards
+  const currentGuards = storage.getAllGuards();
+  const currentResults = await checkGuards(intent);
+
+  // Find differences
+  const differences = originalResults.map(original => {
+    const current = currentResults.find(c => c.guardId === original.guardId);
+    return {
+      guardId: original.guardId,
+      guardName: original.guardName,
+      original: original.passed,
+      current: current?.passed ?? false,
+      reason: current?.passed !== original.passed
+        ? `Guard result changed: was ${original.passed ? 'passed' : 'failed'}, now ${current?.passed ? 'passed' : 'failed'}`
+        : 'No change',
+    };
+  });
+
+  const replayResult: IncidentReplayResult = {
+    originalResult: {
+      allowed: originalResults.every(r => r.passed),
+      timestamp: intent.createdAt,
+      guardResults: originalResults,
+    },
+    currentResult: {
+      allowed: currentResults.every(r => r.passed),
+      timestamp: new Date().toISOString(),
+      guardResults: currentResults,
+    },
+    differences,
+  };
+
+  res.json(replayResult);
+});
+
+// PHASE 3: Transaction verification endpoint
+// Sync transaction status from Circle API
+paymentsRouter.get('/:id/sync', async (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  // Only sync if we have execution artifacts
+  if (!intent.txHash && !intent.metadata?.circleTransactionId && !intent.metadata?.circleTransferId) {
+    return res.status(400).json({
+      error: 'No transaction to sync',
+      message: 'Payment has not been executed yet'
+    });
+  }
+
+  try {
+    const { callMcp } = await import('../lib/mcp-client.js');
+
+    // Try to get transaction status from Circle
+    // Use circle_transaction_id or transfer_id if available
+    const txId = intent.metadata?.circleTransactionId || intent.metadata?.circleTransferId || intent.txHash;
+
+    const statusResult = await callMcp('get_transaction_status', {
+      transaction_id: txId
+    }) as any;
+
+    if (statusResult?.status === 'success') {
+      // Map Circle transaction states to simplified states
+      const circleStatus = statusResult.transaction_status || statusResult.state || 'unknown';
+      let mappedStatus: 'pending' | 'confirmed' | 'failed';
+
+      // Circle states: pending, complete, failed, etc.
+      if (circleStatus === 'complete' || circleStatus === 'confirmed' || circleStatus === 'success') {
+        mappedStatus = 'confirmed';
+      } else if (circleStatus === 'failed' || circleStatus === 'error' || circleStatus === 'cancelled') {
+        mappedStatus = 'failed';
+      } else {
+        mappedStatus = 'pending';
+      }
+
+      // PHASE: Update blockchain transaction hash and explorer URL if available
+      const blockchainTxHash = statusResult.blockchain_tx || statusResult.tx_hash || statusResult.transaction_hash;
+      // Only update if we have a valid blockchain hash (starts with 0x or is 64-char hex)
+      const isValidBlockchainHash = blockchainTxHash && (blockchainTxHash.startsWith('0x') || blockchainTxHash.match(/^[0-9a-fA-F]{64}$/));
+
+      if (isValidBlockchainHash && blockchainTxHash !== intent.txHash) {
+        intent.txHash = blockchainTxHash;
+
+        // Generate explorer URL for Arc Testnet
+        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://explorer.testnet.arc.network/tx/';
+        const explorerUrl = `${explorerBase}${blockchainTxHash}`;
+
+        // Update metadata with explorer URL
+        if (!intent.metadata) {
+          intent.metadata = {};
+        }
+        intent.metadata.explorerUrl = explorerUrl;
+        intent.metadata.blockchainTxHash = blockchainTxHash;
+
+        console.log(`[Transaction Sync] Updated blockchain tx hash and explorer URL for intent ${intent.id}: ${blockchainTxHash}`);
+      }
+
+      // Update intent status if it changed
+      if (mappedStatus === 'confirmed' && intent.status !== 'succeeded') {
+        intent.status = 'succeeded';
+        intent.updatedAt = new Date().toISOString();
+        storage.savePaymentIntent(intent);
+
+        // Update Supabase if configured
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`, supabaseKey);
+            const updateData: any = { status: 'succeeded', updated_at: new Date().toISOString() };
+
+            // Update blockchain transaction hash and explorer URL if available
+            if (intent.txHash) {
+              updateData.blockchain_tx_hash = intent.txHash;
+            }
+            if (intent.metadata?.explorerUrl) {
+              updateData.explorer_url = intent.metadata.explorerUrl;
+            }
+
+            await supabase
+              .from('payment_intents')
+              .update(updateData)
+              .eq('id', intent.id);
+          }
+        } catch (dbError) {
+          console.error('[Transaction Sync] Failed to update Supabase:', dbError);
+        }
+      } else if (mappedStatus === 'failed' && intent.status !== 'failed') {
+        intent.status = 'failed';
+        intent.steps[3].status = 'failed';
+        intent.steps[3].details = 'Transaction failed on-chain';
+        intent.updatedAt = new Date().toISOString();
+        storage.savePaymentIntent(intent);
+
+        // Update Supabase
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`, supabaseKey);
+            await supabase
+              .from('payment_intents')
+              .update({ status: 'failed', last_error: 'Transaction failed on-chain', updated_at: new Date().toISOString() })
+              .eq('id', intent.id);
+          }
+        } catch (dbError) {
+          console.error('[Transaction Sync] Failed to update Supabase:', dbError);
+        }
+      }
+
+      return res.json({
+        transactionStatus: mappedStatus,
+        circleStatus,
+        intent,
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+
+    // If status check failed, return current intent state
+    return res.json({
+      transactionStatus: 'pending',
+      error: 'Could not fetch transaction status from Circle',
+      intent,
+      lastUpdated: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('[Transaction Sync] Error:', error);
+
+    // Return current intent state with error
+    return res.json({
+      transactionStatus: intent.status === 'succeeded' ? 'confirmed' : 'pending',
+      error: error instanceof Error ? error.message : 'Unknown error',
+      intent,
+      lastUpdated: new Date().toISOString(),
+    });
+  }
+});
+
+
+// Get MCP/SDK contract
+paymentsRouter.get('/:id/contract', (req, res) => {
+  const intent = storage.getPaymentIntent(req.params.id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  const contract: McpSdkContract = intent.contract || {
+    backendApiCall: {
+      method: 'POST',
+      endpoint: `/api/payments/${intent.id}/simulate`,
+      payload: {
+        amount: intent.amount,
+        recipient: intent.recipient,
+        recipientAddress: intent.recipientAddress,
+        walletId: intent.walletId,
+        chain: intent.chain,
+      },
+    },
+    mcpToolInvoked: {
+      toolName: 'create_payment_intent',
+      toolId: 'mcp_tool_1',
+      input: {
+        amount: intent.amount,
+        recipient: intent.recipient,
+        chain: intent.chain,
+      },
+    },
+    sdkMethodCalled: {
+      method: 'simulate',
+      params: {
+        amount: intent.amount,
+        recipientAddress: intent.recipientAddress,
+        chain: intent.chain,
+      },
+      result: {
+        route: intent.route,
+        estimatedFee: 0.5,
+      },
+    },
+  };
+
+  res.json(contract);
+});

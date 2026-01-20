@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#3b82f6" />
+    <title>OmniAgentPay</title>
+    <meta name="description" content="Agentic payment platform for autonomous financial operations" />
+    <meta name="author" content="OmniAgentPay" />
+
+    <meta property="og:title" content="OmniAgentPay" />
+    <meta property="og:description" content="Agentic payment platform for autonomous financial operations" />
+    <meta property="og:type" content="website" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/x-icon" href="/favicon2.ico" />
+    
+    <!-- Preconnect to external domains for faster loading -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="dns-prefetch" href="https://fonts.googleapis.com" />
+    
+    <!-- Preload critical resources -->
+    <link rel="modulepreload" href="/src/main.tsx" />
+  </head>
+
+  <body>
+    <div id="root">
+      <!-- Loading fallback for better perceived performance -->
+      <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #0a0a0a;">
+        <div style="color: #888; font-family: system-ui;">Loading...</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

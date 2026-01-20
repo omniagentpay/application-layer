@@ -1,0 +1,30 @@
+# Supabase CLI Configuration
+# This file configures Supabase CLI for migrations
+
+# Project ID will be set when you run: npx supabase link
+# Or you can set it manually here:
+# project_id = "ukumidggstlejefbrayw"
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["https://localhost:3000"]
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "storage", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+api_url = "http://localhost"
+
+[realtime]
+enabled = true

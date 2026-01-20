@@ -1,0 +1,200 @@
+/* OmniAgentPay Premium Design Tokens
+ * Stripe / Linear / Vercel inspired dark theme
+ * Enterprise-grade with controlled color palette
+ */
+
+@layer base {
+  :root {
+    /* === Background Layers === */
+    --background: 0 0% 99%;
+    --background-elevated: 0 0% 100%;
+    --surface: 0 0% 100%;
+    --surface-elevated: 0 0% 100%;
+
+    /* === Text Colors === */
+    --foreground: 220 13% 13%;
+    --foreground-secondary: 220 9% 46%;
+    --foreground-muted: 220 9% 65%;
+
+    /* === Border Colors === */
+    --border: 220 13% 91%;
+    --border-subtle: 220 13% 96%;
+    --border-strong: 220 13% 80%;
+
+    /* === Accent Colors === */
+    /* Primary: Green (success/action) */
+    --accent-primary: 142 71% 45%;
+    --accent-primary-hover: 142 71% 40%;
+    --accent-primary-light: 142 71% 95%;
+    
+    /* Info: Blue */
+    --accent-info: 199 89% 48%;
+    --accent-info-hover: 199 89% 43%;
+    --accent-info-light: 199 89% 95%;
+    
+    /* Warning: Amber */
+    --accent-warning: 38 92% 50%;
+    --accent-warning-hover: 38 92% 45%;
+    --accent-warning-light: 38 92% 95%;
+    
+    /* Danger: Red */
+    --accent-danger: 0 72% 51%;
+    --accent-danger-hover: 0 72% 46%;
+    --accent-danger-light: 0 72% 95%;
+    
+    /* Agent/AI: Purple (very light usage) */
+    --accent-purple: 262 80% 50%;
+    --accent-purple-hover: 262 80% 45%;
+    --accent-purple-light: 262 80% 95%;
+
+    /* === Semantic Colors === */
+    --success: var(--accent-primary);
+    --success-foreground: 0 0% 100%;
+    --info: var(--accent-info);
+    --info-foreground: 0 0% 100%;
+    --warning: var(--accent-warning);
+    --warning-foreground: 0 0% 100%;
+    --destructive: var(--accent-danger);
+    --destructive-foreground: 0 0% 100%;
+
+    /* === Cards and Surfaces === */
+    --card: 0 0% 100%;
+    --card-foreground: 220 13% 13%;
+    --card-border: var(--border);
+
+    /* === Muted Surfaces === */
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    /* === Inputs === */
+    --input: 220 13% 91%;
+    --input-focus: var(--accent-primary);
+    --ring: var(--accent-primary);
+
+    /* === Sidebar === */
+    --sidebar-background: 220 14% 98%;
+    --sidebar-foreground: 220 9% 46%;
+    --sidebar-primary: var(--accent-primary);
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 14% 96%;
+    --sidebar-accent-foreground: 220 13% 13%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: var(--accent-primary);
+    --sidebar-active-indicator: var(--accent-primary);
+
+    /* === Radius === */
+    --radius: 0.5rem;
+    --radius-sm: 0.375rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
+
+    /* === Spacing System (8pt grid) === */
+    --spacing-xs: 0.25rem;  /* 4px */
+    --spacing-sm: 0.5rem;    /* 8px */
+    --spacing-md: 1rem;      /* 16px */
+    --spacing-lg: 1.5rem;    /* 24px */
+    --spacing-xl: 2rem;      /* 32px */
+    --spacing-2xl: 3rem;     /* 48px */
+
+    /* === Layout === */
+    --header-height: 56px;
+    --sidebar-width: 240px;
+    --sidebar-collapsed-width: 64px;
+    --content-max-width: 1400px;
+
+    /* === Shadows === */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+
+    /* === Typography === */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  }
+
+  .dark {
+    /* === Background Layers === */
+    --background: 220 25% 6%;
+    --background-elevated: 220 22% 8%;
+    --surface: 220 22% 9%;
+    --surface-elevated: 220 20% 11%;
+
+    /* === Text Colors === */
+    --foreground: 210 20% 98%;
+    --foreground-secondary: 215 16% 75%;
+    --foreground-muted: 215 16% 65%;
+
+    /* === Border Colors === */
+    --border: 220 18% 15%;
+    --border-subtle: 220 18% 12%;
+    --border-strong: 220 18% 20%;
+
+    /* === Accent Colors === */
+    /* Primary: Green (success/action) */
+    --accent-primary: 142 76% 50%;
+    --accent-primary-hover: 142 76% 55%;
+    --accent-primary-light: 142 76% 15%;
+    
+    /* Info: Blue */
+    --accent-info: 199 89% 55%;
+    --accent-info-hover: 199 89% 60%;
+    --accent-info-light: 199 89% 15%;
+    
+    /* Warning: Amber */
+    --accent-warning: 38 92% 55%;
+    --accent-warning-hover: 38 92% 60%;
+    --accent-warning-light: 38 92% 15%;
+    
+    /* Danger: Red */
+    --accent-danger: 0 62% 55%;
+    --accent-danger-hover: 0 62% 60%;
+    --accent-danger-light: 0 62% 15%;
+    
+    /* Agent/AI: Purple (very light usage) */
+    --accent-purple: 262 80% 65%;
+    --accent-purple-hover: 262 80% 70%;
+    --accent-purple-light: 262 80% 15%;
+
+    /* === Semantic Colors === */
+    --success: var(--accent-primary);
+    --success-foreground: 220 25% 6%;
+    --info: var(--accent-info);
+    --info-foreground: 220 25% 6%;
+    --warning: var(--accent-warning);
+    --warning-foreground: 220 25% 6%;
+    --destructive: var(--accent-danger);
+    --destructive-foreground: 0 0% 100%;
+
+    /* === Cards and Surfaces === */
+    --card: 220 22% 9%;
+    --card-foreground: 210 20% 98%;
+    --card-border: var(--border);
+
+    /* === Muted Surfaces === */
+    --muted: 220 18% 12%;
+    --muted-foreground: 215 16% 65%;
+
+    /* === Inputs === */
+    --input: 220 18% 15%;
+    --input-focus: var(--accent-primary);
+    --ring: var(--accent-primary);
+
+    /* === Sidebar === */
+    --sidebar-background: 220 24% 7%;
+    --sidebar-foreground: 215 16% 65%;
+    --sidebar-primary: var(--accent-primary);
+    --sidebar-primary-foreground: 220 25% 6%;
+    --sidebar-accent: 220 18% 11%;
+    --sidebar-accent-foreground: 210 20% 98%;
+    --sidebar-border: 220 18% 15%;
+    --sidebar-ring: var(--accent-primary);
+    --sidebar-active-indicator: var(--accent-primary);
+
+    /* === Shadows (darker for dark mode) === */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.3);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.4), 0 4px 6px -4px rgb(0 0 0 / 0.3);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.5), 0 8px 10px -6px rgb(0 0 0 / 0.4);
+  }
+}

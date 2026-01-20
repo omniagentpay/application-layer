@@ -1,0 +1,334 @@
+/* Import premium design tokens - must come before @tailwind */
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Map tokens to Tailwind variables */
+    --primary: var(--accent-primary);
+    --primary-foreground: var(--success-foreground);
+    
+    --secondary: var(--muted);
+    --secondary-foreground: var(--foreground);
+    
+    --popover: var(--surface-elevated);
+    --popover-foreground: var(--foreground);
+    
+    --accent: var(--muted);
+    --accent-foreground: var(--foreground);
+  }
+
+  .dark {
+    --primary: var(--accent-primary);
+    --primary-foreground: var(--success-foreground);
+    
+    --secondary: var(--muted);
+    --secondary-foreground: var(--foreground);
+    
+    --popover: var(--surface-elevated);
+    --popover-foreground: var(--foreground);
+    
+    --accent: var(--muted);
+    --accent-foreground: var(--foreground);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    /* Better touch handling on mobile */
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /* Better touch targets for mobile - only apply to interactive elements, not all buttons */
+  @media (max-width: 768px) {
+    button:not([class*="size-"]):not([class*="h-"]), 
+    a[role="button"]:not([class*="size-"]):not([class*="h-"]), 
+    [role="button"]:not([class*="size-"]):not([class*="h-"]) {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
+
+  /* Prevent text size adjustment on iOS */
+  @media screen and (max-width: 768px) {
+    input, textarea, select {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Typography scale - Premium Inter-based */
+  h1 {
+    @apply text-3xl font-semibold tracking-tight;
+    font-family: var(--font-sans);
+  }
+
+  h2 {
+    @apply text-2xl font-semibold tracking-tight;
+    font-family: var(--font-sans);
+  }
+
+  h3 {
+    @apply text-xl font-semibold tracking-tight;
+    font-family: var(--font-sans);
+  }
+
+  h4 {
+    @apply text-lg font-semibold tracking-tight;
+    font-family: var(--font-sans);
+  }
+
+  body {
+    font-family: var(--font-sans);
+  }
+}
+
+@layer components {
+  /* Metric card styling - Premium */
+  .metric-card {
+    @apply bg-card border border-border rounded-lg p-5 transition-all duration-200;
+    max-width: 100%;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+  }
+  
+  .metric-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+  }
+
+  .metric-value {
+    @apply text-2xl font-semibold tracking-tight text-foreground;
+    /* Prevent value from breaking layout */
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  .metric-label {
+    @apply text-sm text-muted-foreground;
+    /* Ensure labels wrap safely */
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  /* Status chip variants */
+  .status-chip {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .status-succeeded {
+    @apply bg-success/10 text-success;
+  }
+
+  .status-pending {
+    @apply bg-warning/10 text-warning;
+  }
+
+  .status-failed {
+    @apply bg-destructive/10 text-destructive;
+  }
+
+  .status-blocked {
+    @apply bg-muted text-muted-foreground;
+  }
+
+  /* Code block styling */
+  .code-block {
+    @apply bg-muted/50 border border-border rounded-md p-4 font-mono text-sm overflow-x-auto;
+  }
+
+  /* Table styling - Premium with zebra rows */
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table th {
+    @apply text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider py-3 px-2 sm:px-4 border-b border-border;
+    background: hsl(var(--surface));
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .data-table tbody tr {
+    @apply transition-colors duration-150;
+  }
+
+  .data-table tbody tr:nth-child(even) {
+    @apply bg-muted/20;
+  }
+
+  .data-table td {
+    @apply py-3 px-2 sm:px-4 border-b border-border;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-muted/50;
+  }
+
+  /* Mobile table wrapper for horizontal scroll */
+  .table-wrapper {
+    @apply -mx-4 sm:mx-0 overflow-x-auto;
+  }
+
+  .table-wrapper table {
+    @apply min-w-full;
+  }
+
+  /* Page container - Consistent spacing */
+  .page-container {
+    @apply max-w-7xl mx-auto px-4 py-4 sm:px-6 sm:py-6;
+  }
+
+  /* Section spacing */
+  .section {
+    @apply space-y-4;
+  }
+
+  .section-header {
+    @apply flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0;
+  }
+}
+
+@layer utilities {
+  /* Premium animations */
+  .animate-fade-in {
+    animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Skeleton shimmer - Premium */
+  @keyframes shimmer {
+    0% {
+      background-position: -1000px 0;
+    }
+    100% {
+      background-position: 1000px 0;
+    }
+  }
+
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--muted)) 0%,
+      hsl(var(--muted)) 40%,
+      hsl(var(--muted) / 0.5) 50%,
+      hsl(var(--muted)) 60%,
+      hsl(var(--muted)) 100%
+    );
+    background-size: 1000px 100%;
+    animation: shimmer 2s infinite;
+  }
+
+  /* Skeleton shimmer */
+  .skeleton {
+    @apply bg-muted animate-pulse rounded;
+  }
+
+  /* Navbar positioning */
+  .left-sidebar {
+    left: var(--sidebar-width);
+  }
+
+  .left-sidebar-collapsed {
+    left: var(--sidebar-collapsed-width);
+  }
+
+  /* Mobile-specific optimizations */
+  @media (max-width: 768px) {
+    /* Ensure minimum touch target sizes - only for elements without explicit sizing */
+    button:not([class*="size-"]):not([class*="h-"]):not([class*="w-"]), 
+    a[role="button"]:not([class*="size-"]):not([class*="h-"]):not([class*="w-"]), 
+    [role="button"]:not([class*="size-"]):not([class*="h-"]):not([class*="w-"]) {
+      min-height: 44px;
+      min-width: 44px;
+    }
+
+    /* Better spacing for mobile cards */
+    .metric-card {
+      @apply p-4;
+    }
+
+    /* Optimize text sizes for readability */
+    .metric-value {
+      @apply text-xl;
+    }
+
+    /* Better table cell padding on mobile */
+    .table-wrapper td,
+    .table-wrapper th {
+      @apply px-2 py-2;
+    }
+  }
+
+  /* Prevent zoom on input focus (iOS) */
+  @media screen and (max-width: 768px) {
+    input[type="text"],
+    input[type="email"],
+    input[type="number"],
+    input[type="password"],
+    input[type="search"],
+    textarea,
+    select {
+      font-size: 16px !important;
+    }
+  }
+
+  /* Landing page utilities */
+  .text-gradient {
+    background: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .card-hover {
+    @apply transition-all duration-200;
+  }
+
+  .card-hover:hover {
+    @apply border-primary/30 shadow-md;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Custom scrollbar for terminal */
+  .terminal-scroll::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .terminal-scroll::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+    border-radius: 4px;
+  }
+
+  .terminal-scroll::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 4px;
+  }
+
+  .terminal-scroll::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.3);
+  }
+}
