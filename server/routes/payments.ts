@@ -12,6 +12,7 @@ import type {
   WhatIfSimulationResult,
   IncidentReplayResult,
   McpSdkContract,
+  Transaction,
   WalletRef,
 } from '../types/index.js';
 
@@ -423,6 +424,91 @@ paymentsRouter.post('/', async (req, res) => {
   };
 
   storage.savePaymentIntent(intent);
+  
+  // Create a pending transaction record immediately when intent is created
+  // This ensures transactions appear in the list even before execution completes
+  try {
+    const transaction = {
+      id: `tx_${intentId}_${Date.now()}`,
+      intentId: intent.id,
+      walletId: walletRef,
+      type: 'payment' as const,
+      amount: intent.amount,
+      currency: intent.currency,
+      recipient: intent.recipient,
+      recipientAddress: intent.recipientAddress,
+      status: 'pending' as const, // Will be updated to 'succeeded' when execution completes
+      chain: intent.chain,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        intentStatus: intent.status,
+      },
+    };
+    storage.saveTransaction(transaction);
+    
+    // Persist pending transaction to Supabase immediately
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+    
+    if (supabaseUrl && supabaseKey && privyUserId && privyUserId !== 'unknown') {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(
+        supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+        supabaseKey
+      );
+      
+      // Get the Supabase user ID from privy_user_id
+      const { data: user } = await supabase
+        .from('users')
+        .select('id')
+        .eq('privy_user_id', privyUserId)
+        .maybeSingle();
+      
+      if (user) {
+        const { error: txError } = await supabase
+          .from('transactions')
+          .upsert({
+            id: transaction.id,
+            user_id: user.id,
+            intent_id: transaction.intentId,
+            wallet_id: transaction.walletId,
+            type: transaction.type,
+            amount: transaction.amount,
+            currency: transaction.currency,
+            recipient: transaction.recipient,
+            recipient_address: transaction.recipientAddress,
+            status: transaction.status,
+            chain: transaction.chain,
+            tx_hash: null, // Will be set when execution completes
+            fee: null,
+            created_at: transaction.createdAt,
+            metadata: transaction.metadata ? JSON.stringify(transaction.metadata) : null,
+          }, {
+            onConflict: 'id',
+          });
+        
+        if (txError) {
+          console.error('[Create Intent] Failed to persist pending transaction to Supabase:', {
+            error: txError,
+            transactionId: transaction.id,
+            userId: user.id,
+            intentId: transaction.intentId,
+          });
+        } else {
+          console.log('[Create Intent] Successfully persisted pending transaction to Supabase:', {
+            transactionId: transaction.id,
+            userId: user.id,
+            intentId: transaction.intentId,
+            status: 'pending',
+          });
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[Create Intent] Error creating pending transaction:', error);
+    // Don't fail the request if transaction creation fails
+  }
+  
   res.status(201).json(intent);
 });
 
@@ -673,86 +759,90 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
           // Continue - execution was successful even if DB write failed
         }
 
-        // Create transaction record (only if we have a txHash)
-        if (executeResult.txHash) {
-          // Generate explorer URL if not already provided
-          const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx';
-          const normalizedBase = explorerBase.replace(/\/tx\/?$/, '/tx');
-          const explorerUrl = executeResult.explorerUrl || `${normalizedBase}/${executeResult.txHash}`;
-          
-          const transaction = {
-            id: `tx_${Date.now()}`,
-            intentId: intent.id,
-            walletId: fromWallet.ref,
-            type: 'payment' as const,
-            amount: intent.amount,
-            currency: intent.currency,
-            recipient: intent.recipient,
-            recipientAddress: intent.recipientAddress,
-            status: 'succeeded' as const,
-            chain: intent.chain,
-            txHash: executeResult.txHash,
-            fee: 0.5, // TODO: Get actual fee from SDK
-            createdAt: new Date().toISOString(),
-            metadata: {
-              explorerUrl,
-              circleTransferId: executeResult.circleTransferId,
-              circleTransactionId: executeResult.circleTransactionId,
-            },
-          };
-          storage.saveTransaction(transaction);
+        // Update or create transaction record
+        // Generate explorer URL if not already provided
+        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx';
+        const normalizedBase = explorerBase.replace(/\/tx\/?$/, '/tx');
+        const explorerUrl = executeResult.txHash ? (executeResult.explorerUrl || `${normalizedBase}/${executeResult.txHash}`) : undefined;
+        
+        // Try to find existing transaction by intent ID
+        const existingTransactions = storage.getAllTransactions();
+        const existingTx = existingTransactions.find(tx => tx.intentId === intent.id) as Transaction | undefined;
+        
+        const transaction: Transaction = {
+          id: existingTx?.id || `tx_${intent.id}_${Date.now()}`,
+          intentId: intent.id,
+          walletId: fromWallet.ref,
+          type: 'payment' as const,
+          amount: intent.amount,
+          currency: intent.currency,
+          recipient: intent.recipient,
+          recipientAddress: intent.recipientAddress,
+          status: executeResult.txHash ? ('succeeded' as const) : (existingTx?.status || 'pending' as const),
+          chain: intent.chain,
+          txHash: executeResult.txHash || existingTx?.txHash,
+          fee: 0.5, // TODO: Get actual fee from SDK
+          createdAt: existingTx?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          metadata: {
+            explorerUrl,
+            circleTransferId: executeResult.circleTransferId,
+            circleTransactionId: executeResult.circleTransactionId,
+            ...(existingTx?.metadata as Record<string, any> | undefined),
+          },
+        };
+        storage.saveTransaction(transaction);
 
-          // Persist transaction to Supabase
-          try {
-            const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-            const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+        // Persist transaction to Supabase
+        try {
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
 
-            if (supabaseUrl && supabaseKey && privyUserId && privyUserId !== 'unknown') {
-              const { createClient } = await import('@supabase/supabase-js');
-              const supabase = createClient(
-                supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
-                supabaseKey
-              );
+          if (supabaseUrl && supabaseKey && privyUserId && privyUserId !== 'unknown') {
+            const { createClient } = await import('@supabase/supabase-js');
+            const supabase = createClient(
+              supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+              supabaseKey
+            );
 
-              // Get the Supabase user ID from privy_user_id
-              const { data: user } = await supabase
-                .from('users')
-                .select('id')
-                .eq('privy_user_id', privyUserId)
-                .maybeSingle();
+            // Get the Supabase user ID from privy_user_id
+            const { data: user } = await supabase
+              .from('users')
+              .select('id')
+              .eq('privy_user_id', privyUserId)
+              .maybeSingle();
 
-              if (user) {
-                const { error: txError } = await supabase
-                  .from('transactions')
-                  .upsert({
-                    id: transaction.id,
-                    user_id: user.id,
-                    intent_id: transaction.intentId,
-                    wallet_id: transaction.walletId,
-                    type: transaction.type,
-                    amount: transaction.amount,
-                    currency: transaction.currency,
-                    recipient: transaction.recipient,
-                    recipient_address: transaction.recipientAddress,
-                    status: transaction.status,
-                    chain: transaction.chain,
-                    tx_hash: transaction.txHash,
-                    fee: transaction.fee,
-                    created_at: transaction.createdAt,
-                    metadata: transaction.metadata,
-                  });
+            if (user) {
+              const { error: txError } = await supabase
+                .from('transactions')
+                .upsert({
+                  id: transaction.id,
+                  user_id: user.id,
+                  intent_id: transaction.intentId,
+                  wallet_id: transaction.walletId,
+                  type: transaction.type,
+                  amount: transaction.amount,
+                  currency: transaction.currency,
+                  recipient: transaction.recipient,
+                  recipient_address: transaction.recipientAddress,
+                  status: transaction.status,
+                  chain: transaction.chain,
+                  tx_hash: transaction.txHash,
+                  fee: transaction.fee,
+                  created_at: transaction.createdAt,
+                  metadata: transaction.metadata,
+                });
 
-                if (txError) {
-                  console.error('[Payment Execution] Failed to persist transaction to Supabase:', txError);
-                } else {
-                  console.log('[Payment Execution] Successfully persisted transaction to Supabase:', transaction.id);
-                }
+              if (txError) {
+                console.error('[Payment Execution] Failed to persist transaction to Supabase:', txError);
+              } else {
+                console.log('[Payment Execution] Successfully persisted transaction to Supabase:', transaction.id);
               }
             }
-          } catch (dbError) {
-            console.error('[Payment Execution] Failed to persist transaction to Supabase:', dbError);
-            // Continue - transaction was saved to in-memory storage
           }
+        } catch (dbError) {
+          console.error('[Payment Execution] Failed to persist transaction to Supabase:', dbError);
+          // Continue - transaction was saved to in-memory storage
         }
 
         // PHASE 2: Return enhanced response with all execution artifacts
@@ -887,8 +977,12 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
           // Continue - execution was successful even if DB write failed
         }
 
-        const transaction = {
-          id: `tx_${Date.now()}`,
+        // Try to find existing transaction by intent ID, or create new one
+        const existingTransactions = storage.getAllTransactions();
+        const existingTx = existingTransactions.find(tx => tx.intentId === intent.id) as Transaction | undefined;
+        
+        const transaction: Transaction = {
+          id: existingTx?.id || `tx_${intent.id}_${Date.now()}`,
           intentId: intent.id,
           walletId: fromWallet.ref,
           type: 'payment' as const,
@@ -896,11 +990,18 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
           currency: intent.currency,
           recipient: intent.recipient,
           recipientAddress: intent.recipientAddress,
-          status: 'succeeded' as const,
+          status: executeResult.txHash ? ('succeeded' as const) : (existingTx?.status || 'pending' as const),
           chain: intent.chain,
-          txHash: executeResult.txHash,
+          txHash: executeResult.txHash || existingTx?.txHash,
           fee: 0.5,
-          createdAt: new Date().toISOString(),
+          createdAt: existingTx?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          metadata: {
+            explorerUrl: executeResult.explorerUrl,
+            circleTransferId: executeResult.circleTransferId,
+            circleTransactionId: executeResult.circleTransactionId,
+            ...(existingTx?.metadata as Record<string, any> | undefined),
+          },
         };
         storage.saveTransaction(transaction);
 
@@ -938,16 +1039,31 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
                   recipient_address: transaction.recipientAddress,
                   status: transaction.status,
                   chain: transaction.chain,
-                  tx_hash: transaction.txHash,
-                  fee: transaction.fee,
+                  tx_hash: transaction.txHash || null,
+                  fee: transaction.fee || null,
                   created_at: transaction.createdAt,
-                  metadata: transaction.metadata,
+                  updated_at: transaction.updatedAt || transaction.createdAt,
+                  metadata: transaction.metadata ? JSON.stringify(transaction.metadata) : null,
+                }, {
+                  onConflict: 'id',
                 });
 
               if (txError) {
-                console.error('[Payment Execution] Failed to persist transaction to Supabase:', txError);
+                console.error('[Payment Execution] Failed to persist transaction to Supabase:', {
+                  error: txError,
+                  transactionId: transaction.id,
+                  userId: user.id,
+                  intentId: transaction.intentId,
+                  status: transaction.status,
+                });
               } else {
-                console.log('[Payment Execution] Successfully persisted transaction to Supabase:', transaction.id);
+                console.log('[Payment Execution] Successfully persisted transaction to Supabase:', {
+                  transactionId: transaction.id,
+                  userId: user.id,
+                  intentId: transaction.intentId,
+                  status: transaction.status,
+                  txHash: transaction.txHash || 'pending',
+                });
               }
             }
           }
@@ -1002,7 +1118,6 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
         });
       }
     }
-
   } catch (error) {
     intent.status = 'failed';
     intent.steps[2].status = 'failed';

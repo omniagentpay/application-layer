@@ -145,7 +145,7 @@ walletsRouter.get('/agent/balance', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    const { data: user, error: userError } = await supabase
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
@@ -526,7 +526,7 @@ walletsRouter.get('/agent', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    const { data: user, error: userError } = await supabase
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
@@ -762,7 +762,7 @@ walletsRouter.post('/agent/create', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    const { data: user, error: userError } = await supabase
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
@@ -1042,7 +1042,7 @@ walletsRouter.post('/agent/reset', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    const { data: user, error: userError } = await supabase
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
