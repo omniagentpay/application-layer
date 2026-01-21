@@ -414,40 +414,128 @@ class GatewayAdapter(ProtocolAdapter):
             "https://iris-api-sandbox.circle.com" if is_testnet else "https://iris-api.circle.com"
         )
 
-        # Step 1: Initiate burn on source chain
-        # Note: For full implementation, this would call the TokenMessenger contract
-        # via Circle's contract execution API. For now, we use the transfer API
-        # which handles the contract interaction internally for supported chains.
+        # Step 1: Attempt to execute cross-chain transfer via Circle's transfer API
+        # Note: Circle's Wallets API transfer() method currently only supports same-chain transfers.
+        # For true CCTP, we would need to:
+        # 1. Call TokenMessenger.depositForBurn() on source chain
+        # 2. Poll Iris API for attestation
+        # 3. Call MessageTransmitter.receiveMessage() on destination chain
+        # 
+        # For now, we attempt the transfer and provide clear error messaging if it fails.
 
-        # For hackathon MVP, we'll note that this requires Circle to add
-        # native CCTP support to their Wallets API, which is in development.
-        # The architecture is ready - we just need the API endpoint.
-
-        return PaymentResult(
-            success=False,
-            transaction_id=None,
-            blockchain_tx=None,
-            amount=amount,
-            recipient=f"{dest_network.value}:{destination_address}",
-            method=self.method,
-            status=PaymentStatus.PENDING,
-            error=None,
-            metadata={
-                "cctp_flow": "burn_attestation_mint",
-                "source_domain": source_domain,
-                "destination_domain": dest_domain,
-                "iris_api": iris_base_url,
-                "note": (
-                    "CCTP architecture implemented. Awaiting Circle Wallets API "
-                    "native CCTP endpoint or contract execution integration. "
-                    "The transfer will work automatically when Circle adds support."
-                ),
-                "source_network": source_network.value,
-                "destination_network": dest_network.value,
-                "destination_address": destination_address,
-                "estimated_time": "~20 minutes for standard CCTP, ~seconds for fast transfer",
-            },
+        self._logger.info(
+            f"Attempting CCTP transfer: {source_network.value} -> {dest_network.value}, "
+            f"amount={amount}, destination={destination_address}"
         )
+
+        try:
+            # Attempt transfer - Circle API will reject if cross-chain, but we try anyway
+            # This provides better error messages than just returning failure
+            usdc_token_id = self._wallet_service._circle.find_usdc_token_id(wallet_id)
+            if not usdc_token_id:
+                return PaymentResult(
+                    success=False,
+                    transaction_id=None,
+                    blockchain_tx=None,
+                    amount=amount,
+                    recipient=f"{dest_network.value}:{destination_address}",
+                    method=self.method,
+                    status=PaymentStatus.FAILED,
+                    error=f"USDC token not found for wallet {wallet_id} on {source_network.value}",
+                    metadata={
+                        "cctp_flow": "burn_attestation_mint",
+                        "source_domain": source_domain,
+                        "destination_domain": dest_domain,
+                        "source_network": source_network.value,
+                        "destination_network": dest_network.value,
+                    },
+                )
+
+            # Attempt transfer - this will fail for cross-chain but gives us the actual error
+            transfer_result = self._wallet_service.transfer(
+                wallet_id=wallet_id,
+                destination_address=destination_address,
+                amount=amount,
+                fee_level=fee_level,
+                wait_for_completion=wait_for_completion,
+            )
+
+            # If transfer succeeded, it means Circle added cross-chain support!
+            if transfer_result.success:
+                return PaymentResult(
+                    success=True,
+                    transaction_id=transfer_result.transaction.id if transfer_result.transaction else None,
+                    blockchain_tx=transfer_result.tx_hash,
+                    amount=amount,
+                    recipient=f"{dest_network.value}:{destination_address}",
+                    method=self.method,
+                    status=PaymentStatus.COMPLETED,
+                    metadata={
+                        "cctp_flow": "transfer_api",
+                        "source_domain": source_domain,
+                        "destination_domain": dest_domain,
+                        "source_network": source_network.value,
+                        "destination_network": dest_network.value,
+                        "note": "Cross-chain transfer completed via Circle Transfer API",
+                    },
+                )
+
+            # Transfer failed - likely because Circle doesn't support cross-chain via transfer API yet
+            return PaymentResult(
+                success=False,
+                transaction_id=None,
+                blockchain_tx=None,
+                amount=amount,
+                recipient=f"{dest_network.value}:{destination_address}",
+                method=self.method,
+                status=PaymentStatus.FAILED,
+                error=(
+                    f"Cross-chain CCTP transfer not yet supported via Circle Wallets API. "
+                    f"Error: {transfer_result.error or 'Transfer failed'}. "
+                    f"CCTP requires smart contract interactions (TokenMessenger/MessageTransmitter) "
+                    f"which are not yet available through the Wallets API. "
+                    f"Supported chains: ETH, AVAX, OP, ARB, BASE, MATIC, SOL (and testnets)."
+                ),
+                metadata={
+                    "cctp_flow": "burn_attestation_mint",
+                    "source_domain": source_domain,
+                    "destination_domain": dest_domain,
+                    "iris_api": iris_base_url,
+                    "source_network": source_network.value,
+                    "destination_network": dest_network.value,
+                    "destination_address": destination_address,
+                    "transfer_error": transfer_result.error,
+                    "estimated_time": "~20 minutes for standard CCTP, ~seconds for fast transfer",
+                },
+            )
+
+        except Exception as e:
+            self._logger.error(f"CCTP transfer attempt failed: {e}", exc_info=True)
+            return PaymentResult(
+                success=False,
+                transaction_id=None,
+                blockchain_tx=None,
+                amount=amount,
+                recipient=f"{dest_network.value}:{destination_address}",
+                method=self.method,
+                status=PaymentStatus.FAILED,
+                error=(
+                    f"CCTP transfer failed: {e}. "
+                    f"Cross-chain transfers require Circle's Smart Contract Platform SDK "
+                    f"or direct contract interactions (TokenMessenger/MessageTransmitter). "
+                    f"These are not yet integrated in this SDK."
+                ),
+                metadata={
+                    "cctp_flow": "burn_attestation_mint",
+                    "source_domain": source_domain,
+                    "destination_domain": dest_domain,
+                    "iris_api": iris_base_url,
+                    "source_network": source_network.value,
+                    "destination_network": dest_network.value,
+                    "destination_address": destination_address,
+                    "exception": str(e),
+                },
+            )
 
     async def simulate(
         self,

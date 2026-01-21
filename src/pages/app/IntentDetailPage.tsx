@@ -258,7 +258,9 @@ export default function IntentDetailPage() {
 
   const startVerificationPolling = () => {
     let count = 0;
+    let consecutiveErrors = 0;
     const maxPolls = 10; // 30 seconds (3s interval)
+    const maxConsecutiveErrors = 5; // Stop after 5 consecutive errors
 
     const pollInterval = setInterval(async () => {
       count++;
@@ -267,6 +269,7 @@ export default function IntentDetailPage() {
       if (count >= maxPolls) {
         clearInterval(pollInterval);
         setVerificationStatus(null);
+        setPollCount(0);
         toast.info('Verification timeout', {
           description: 'Confirmation delayed — check explorer link',
         });
@@ -274,26 +277,35 @@ export default function IntentDetailPage() {
       }
 
       try {
-        if (!intent?.id) return;
+        if (!intent?.id) {
+          clearInterval(pollInterval);
+          return;
+        }
+        
         const response = await fetch(`/api/payments/${intent.id}/sync`);
         
-        // Check if response is OK and has JSON content
+        // Check if response is OK
         if (!response.ok) {
-          // If not OK, stop polling to avoid spam
-          if (count >= 3) {
+          consecutiveErrors++;
+          // Continue polling unless we have too many consecutive errors
+          if (consecutiveErrors >= maxConsecutiveErrors) {
             clearInterval(pollInterval);
+            setVerificationStatus(null);
+            setPollCount(0);
             console.warn('Polling stopped due to repeated errors');
+            toast.error('Failed to verify transaction', {
+              description: 'Please check the explorer link manually',
+            });
           }
           return;
         }
         
+        // Reset error counter on success
+        consecutiveErrors = 0;
+        
         const contentType = response.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
-          // Not JSON response, skip this poll
-          if (count >= 3) {
-            clearInterval(pollInterval);
-            console.warn('Polling stopped: non-JSON response');
-          }
+          // Not JSON response, skip this poll but continue
           return;
         }
         
@@ -302,6 +314,7 @@ export default function IntentDetailPage() {
         if (data.transactionStatus === 'confirmed' || data.transactionStatus === 'failed') {
           clearInterval(pollInterval);
           setVerificationStatus(data.transactionStatus);
+          setPollCount(0);
           if (data.intent) {
             setIntent(data.intent);
           }
@@ -313,15 +326,29 @@ export default function IntentDetailPage() {
           }
         }
       } catch (error) {
+        consecutiveErrors++;
         // Only log error if it's not a JSON parse error (which we handle above)
         if (error instanceof SyntaxError && error.message.includes('JSON')) {
           // Silently skip JSON parse errors - response might not be ready yet
-          if (count >= 5) {
+          if (consecutiveErrors >= maxConsecutiveErrors) {
             clearInterval(pollInterval);
+            setVerificationStatus(null);
+            setPollCount(0);
             console.warn('Polling stopped: repeated JSON parse errors');
+            toast.error('Failed to verify transaction', {
+              description: 'Please check the explorer link manually',
+            });
           }
         } else {
           console.error('Polling error:', error);
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            clearInterval(pollInterval);
+            setVerificationStatus(null);
+            setPollCount(0);
+            toast.error('Failed to verify transaction', {
+              description: 'Please check the explorer link manually',
+            });
+          }
         }
       }
     }, 3000);

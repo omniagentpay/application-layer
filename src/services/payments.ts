@@ -135,4 +135,104 @@ export const paymentsService = {
   async getContract(intentId: string) {
     return apiClient.get(`/payments/${intentId}/contract`);
   },
+
+  /**
+   * Execute agent payment flow automatically
+   * Returns an async generator that yields status updates
+   */
+  async *executeAgentPaymentFlow(params: {
+    amount: number;
+    recipient: string;
+    recipientAddress: string;
+    description?: string;
+    walletId: string;
+    chain?: string;
+    currency?: string;
+  }): AsyncGenerator<{
+    step: 'creating_intent' | 'simulating' | 'checking_guards' | 'executing' | 'completed' | 'failed' | 'requires_approval';
+    message: string;
+    intentId?: string;
+    technicalDetails?: {
+      tool: string;
+      input: Record<string, unknown>;
+      output?: unknown;
+      error?: string;
+    };
+  }, void, unknown> {
+    try {
+      // Construct endpoint URL - handle both cases where VITE_API_BASE_URL includes /api or not
+      const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
+      // If base URL already ends with /api, use it directly; otherwise append /api
+      const baseUrl = apiBaseUrl.endsWith('/api') ? apiBaseUrl : `${apiBaseUrl}/api`;
+      const endpoint = `${baseUrl}/payments/agent/execute`;
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(params),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Response body is not readable');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'complete') {
+                // Final result - don't yield, just break
+                break;
+              } else if (data.type === 'error') {
+                yield {
+                  step: 'failed',
+                  message: `⚠️ Payment requires manual approval. Please review the payment intent.`,
+                  technicalDetails: {
+                    tool: 'agent_payment_flow',
+                    input: params,
+                    error: data.error,
+                  },
+                };
+                break;
+              } else {
+                // Status update
+                yield data;
+              }
+            } catch (e) {
+              console.error('Failed to parse SSE data:', e);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      yield {
+        step: 'failed',
+        message: `⚠️ Payment requires manual approval. Please review the payment intent.`,
+        technicalDetails: {
+          tool: 'agent_payment_flow',
+          input: params,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+    }
+  },
 };

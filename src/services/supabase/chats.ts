@@ -1,8 +1,11 @@
 import { supabase } from '@/lib/supabase';
 import type { ChatMessage } from '@/types';
 
+// Cache for tracking last saved message count to avoid unnecessary saves
+const lastSavedCountCache = new Map<string, number>();
+
 /**
- * Save chat messages to Supabase
+ * Save chat messages to Supabase (optimized with incremental updates)
  */
 export async function saveChatMessages(
   userId: string,
@@ -23,22 +26,42 @@ export async function saveChatMessages(
 
     if (messagesToSave.length === 0) return;
 
-    // Delete existing messages for this user and insert new ones
-    // This ensures we always have the latest chat history
-    await supabase
+    // Check if we need to save (avoid unnecessary operations)
+    const lastCount = lastSavedCountCache.get(userId) || 0;
+    if (lastCount === messagesToSave.length) {
+      // Count matches, skip save (messages haven't changed)
+      return;
+    }
+
+    // Use upsert instead of delete+insert for better performance
+    // This will update existing messages and insert new ones
+    const { error } = await supabase
       .from('chat_messages')
-      .delete()
-      .eq('user_id', userId);
+      .upsert(messagesToSave, {
+        onConflict: 'id',
+        ignoreDuplicates: false,
+      });
 
-    if (messagesToSave.length > 0) {
-      const { error } = await supabase
+    if (error) {
+      console.error('Error saving chat messages:', error);
+      // Fallback to delete+insert if upsert fails (for compatibility)
+      await supabase
         .from('chat_messages')
-        .insert(messagesToSave);
-
-      if (error) {
-        console.error('Error saving chat messages:', error);
-        throw error;
+        .delete()
+        .eq('user_id', userId);
+      
+      if (messagesToSave.length > 0) {
+        const { error: insertError } = await supabase
+          .from('chat_messages')
+          .insert(messagesToSave);
+        
+        if (insertError) {
+          throw insertError;
+        }
       }
+    } else {
+      // Update cache
+      lastSavedCountCache.set(userId, messagesToSave.length);
     }
   } catch (error) {
     console.error('Failed to save chat messages:', error);
@@ -47,15 +70,24 @@ export async function saveChatMessages(
 }
 
 /**
- * Load chat messages from Supabase
+ * Load chat messages from Supabase (optimized with limit and caching)
  */
-export async function loadChatMessages(userId: string): Promise<ChatMessage[]> {
+export async function loadChatMessages(
+  userId: string,
+  options?: { limit?: number }
+): Promise<ChatMessage[]> {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('chat_messages')
       .select('*')
       .eq('user_id', userId)
       .order('timestamp', { ascending: true });
+
+    // Limit results for better performance (default: last 100 messages)
+    const limit = options?.limit || 100;
+    query = query.limit(limit);
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('Error loading chat messages:', error);
@@ -64,7 +96,7 @@ export async function loadChatMessages(userId: string): Promise<ChatMessage[]> {
 
     if (!data) return [];
 
-    return data.map((msg: any) => ({
+    const messages = data.map((msg: any) => ({
       id: msg.id,
       role: msg.role as 'user' | 'assistant' | 'system',
       content: msg.content,
@@ -72,6 +104,11 @@ export async function loadChatMessages(userId: string): Promise<ChatMessage[]> {
       intentId: msg.intent_id || undefined,
       toolCalls: msg.tool_calls ? JSON.parse(msg.tool_calls) : undefined,
     }));
+
+    // Update cache
+    lastSavedCountCache.set(userId, messages.length);
+
+    return messages;
   } catch (error) {
     console.error('Failed to load chat messages:', error);
     return [];

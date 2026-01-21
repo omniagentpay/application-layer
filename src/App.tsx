@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { AppProvider } from "@/contexts/AppContext";
+import { NotificationProvider } from "@/contexts/NotificationContext";
 import { AppLayout } from "@/components/AppLayout";
 import { PageLoader } from "@/components/PageLoader";
 import { PrivyProvider } from "@/components/PrivyProvider";
@@ -24,7 +25,7 @@ const AgentChatPage = lazy(() => import("./pages/app/AgentChatPage"));
 const PaymentIntentsPage = lazy(() => import("./pages/app/PaymentIntentsPage"));
 const IntentDetailPage = lazy(() => import("./pages/app/IntentDetailPage"));
 const PaymentLinkPage = lazy(() => import("./pages/app/PaymentLinkPage"));
-const WalletsPage = lazy(() => import("./pages/app/WalletsPage"));
+const ManageWalletsPage = lazy(() => import("./pages/app/ManageWalletsPage"));
 const WalletDetailPage = lazy(() => import("./pages/app/WalletDetailPage"));
 const CrossChainPage = lazy(() => import("./pages/app/CrossChainPage"));
 const X402DirectoryPage = lazy(() => import("./pages/app/X402DirectoryPage"));
@@ -33,7 +34,6 @@ const GuardStudioPage = lazy(() => import("./pages/app/GuardStudioPage"));
 const DevelopersPage = lazy(() => import("./pages/app/DevelopersPage"));
 const CommercePluginsPage = lazy(() => import("./pages/app/CommercePluginsPage"));
 const SettingsPage = lazy(() => import("./pages/app/SettingsPage"));
-const AgentWalletManagementPage = lazy(() => import("./pages/app/AgentWalletManagementPage"));
 
 // Optimized QueryClient with better defaults
 const queryClient = new QueryClient({
@@ -54,9 +54,10 @@ const App = () => (
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <AppProvider>
-            <Toaster />
-            <Sonner />
-            <BrowserRouter>
+            <NotificationProvider>
+              <Toaster />
+              <Sonner />
+              <BrowserRouter>
             <Suspense fallback={<PageLoader />}>
               <AuthHeader />
               <Routes>
@@ -140,7 +141,7 @@ const App = () => (
                   path="wallets" 
                   element={
                     <Suspense fallback={<PageLoader />}>
-                      <WalletsPage />
+                      <ManageWalletsPage />
                     </Suspense>
                   } 
                 />
@@ -208,14 +209,6 @@ const App = () => (
                     </Suspense>
                   } 
                 />
-                <Route 
-                  path="wallet-management" 
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <AgentWalletManagementPage />
-                    </Suspense>
-                  } 
-                />
               </Route>
 
               <Route 
@@ -226,13 +219,14 @@ const App = () => (
                   </Suspense>
                 } 
               />
-            </Routes>
-          </Suspense>
-        </BrowserRouter>
-      </AppProvider>
-    </TooltipProvider>
-  </QueryClientProvider>
-  </PrivyProvider>
+              </Routes>
+            </Suspense>
+          </BrowserRouter>
+            </NotificationProvider>
+          </AppProvider>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </PrivyProvider>
   </ThemeProvider>
 );
 

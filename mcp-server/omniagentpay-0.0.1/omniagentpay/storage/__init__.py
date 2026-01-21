@@ -37,19 +37,32 @@ except ImportError:
     RedisStorage = None  # type: ignore
 
 
+# Singleton storage instance cache
+_storage_instance: StorageBackend | None = None
+
+
 def get_storage(backend_name: str | None = None) -> StorageBackend:
     """
     Get storage backend from environment or by name.
+    
+    Returns a singleton instance to ensure payment intents persist
+    across multiple MCP calls in the same process.
 
     Args:
         backend_name: Backend name, or None to read from OMNIAGENTPAY_STORAGE_BACKEND env
 
     Returns:
-        StorageBackend instance
+        StorageBackend instance (singleton)
 
     Raises:
         ValueError: If backend name is unknown
     """
+    global _storage_instance
+    
+    # Return existing singleton if already created
+    if _storage_instance is not None:
+        return _storage_instance
+    
     if backend_name is None:
         backend_name = os.environ.get("OMNIAGENTPAY_STORAGE_BACKEND", "memory")
 
@@ -61,7 +74,9 @@ def get_storage(backend_name: str | None = None) -> StorageBackend:
             f"Unknown storage backend: '{backend_name}'. Available: {', '.join(available)}"
         )
 
-    return backend_class()
+    # Create and cache the singleton instance
+    _storage_instance = backend_class()
+    return _storage_instance
 
 
 __all__ = [

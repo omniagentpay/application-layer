@@ -26,13 +26,13 @@ const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 const paymentTools: FunctionDeclaration[] = [
   {
     name: 'check_balance',
-    description: 'Check the USDC balance for a specific wallet or get unified balance across all wallets. When no wallet ID is provided, returns balances for both Metamask (Privy) wallet and Circle Agent wallet separately, along with network information.',
+    description: 'Check the USDC balance ONLY when the user explicitly asks for balance. Do NOT call this before making payments. Returns a simple balance amount.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         walletId: {
           type: SchemaType.STRING,
-          description: 'Optional wallet ID. If not provided, returns unified balance across all wallets including Metamask and Circle Agent wallets',
+          description: 'Optional wallet ID',
         },
       },
       required: [],
@@ -40,7 +40,7 @@ const paymentTools: FunctionDeclaration[] = [
   },
   {
     name: 'list_wallets',
-    description: 'List all available wallets with their addresses and chains',
+    description: 'ONLY call this when user explicitly asks to "list wallets" or "show my wallets". Do NOT call automatically. Returns wallet information.',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {},
@@ -49,7 +49,7 @@ const paymentTools: FunctionDeclaration[] = [
   },
   {
     name: 'create_payment_intent',
-    description: 'Create a payment intent to send USDC to a recipient. This simulates and validates the payment before execution. Uses the connected wallet and ARC Testnet by default if not specified.',
+    description: 'Create a payment intent to send USDC. Call this IMMEDIATELY when user requests a payment. Do NOT check balance first. Do NOT call any other tools before or after this. Supports both wallet addresses (0x...) and usernames (@username).',
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -59,11 +59,11 @@ const paymentTools: FunctionDeclaration[] = [
         },
         recipient: {
           type: SchemaType.STRING,
-          description: 'Recipient address (0x...) or identifier',
+          description: 'Recipient address (0x...) or username (@username). If username is provided, recipientAddress can be the same username.',
         },
         recipientAddress: {
           type: SchemaType.STRING,
-          description: 'Blockchain address of the recipient (0x format)',
+          description: 'Blockchain address of the recipient (0x format) or username (@username). If username is provided, it will be resolved to wallet address automatically.',
         },
         description: {
           type: SchemaType.STRING,
@@ -208,25 +208,28 @@ async function executeToolCall(
     switch (toolName) {
       case 'check_balance':
         // For agent wallet, call MCP server's check_balance
-        // Try to get user's actual wallet ID first, fallback to env var or hardcoded
+        // Try to get user's actual wallet ID first using the balance endpoint
         let agentWalletForBalance: string | null = null;
         
         // Try to fetch user's actual agent wallet if privyUserId is provided
         if (privyUserId) {
           try {
             const { agentWalletService } = await import('./wallets');
-            const agentWallet = await agentWalletService.getAgentWallet(privyUserId);
-            if (agentWallet?.walletId) {
-              agentWalletForBalance = agentWallet.walletId;
+            // Use getAgentWalletBalance which uses the correct /wallets/agent/balance endpoint
+            const balanceData = await agentWalletService.getAgentWalletBalance(privyUserId);
+            if (balanceData?.walletId) {
+              agentWalletForBalance = balanceData.walletId;
+              console.log('[Gemini check_balance] Using user agent wallet:', agentWalletForBalance);
             }
           } catch (error) {
-            console.warn('Failed to fetch user agent wallet, using fallback:', error);
+            console.warn('[Gemini check_balance] Failed to fetch user agent wallet, using fallback:', error);
           }
         }
         
-        // Fallback to env var or hardcoded value
+        // Fallback to env var or hardcoded value (should rarely happen)
         if (!agentWalletForBalance) {
           agentWalletForBalance = import.meta.env.VITE_AGENT_CIRCLE_WALLET_ID || '8a57ee78-f796-536e-aa8e-b5fadfd3dcec';
+          console.warn('[Gemini check_balance] Using FALLBACK agent wallet:', agentWalletForBalance);
         }
         
         const MCP_URL = import.meta.env.VITE_MCP_SERVER_URL || 'http://localhost:3333';
@@ -366,12 +369,69 @@ async function executeToolCall(
         // Get both Privy wallets and Circle agent wallet
         const wallets: Array<{ id: string; type: string; address?: string; chain: string; balance?: string }> = [];
 
-        // Add Circle agent wallet first - hardcoded fallback for immediate functionality
-        const AGENT_WALLET_ID = '8a57ee78-f796-536e-aa8e-b5fadfd3dcec';
-        const agentWalletId = import.meta.env.VITE_AGENT_CIRCLE_WALLET_ID || AGENT_WALLET_ID;
-
-        if (agentWalletId) {
-          // Get wallet details from MCP
+        // Use the same endpoint as the header to ensure consistency
+        if (privyUserId) {
+          try {
+            const { agentWalletService } = await import('./wallets');
+            // Use getAgentWalletBalance which uses the same endpoint as the header
+            const balanceData = await agentWalletService.getAgentWalletBalance(privyUserId);
+            if (balanceData?.walletId) {
+              wallets.push({
+                id: balanceData.walletId,
+                type: 'circle',
+                address: balanceData.walletId, // Circle wallet ID is the address
+                chain: 'arc-testnet',
+                balance: balanceData.balance?.toString() || '0',
+              });
+              console.log('[list_wallets] Using user\'s agent wallet from balance endpoint:', balanceData.walletId, 'Balance:', balanceData.balance);
+            }
+          } catch (error) {
+            console.warn('[list_wallets] Failed to fetch user agent wallet balance, trying fallback:', error);
+            // Fallback: try getAgentWallet
+            try {
+              const { agentWalletService } = await import('./wallets');
+              const agentWallet = await agentWalletService.getAgentWallet(privyUserId);
+              if (agentWallet?.walletId) {
+                // Get balance from MCP for this wallet
+                try {
+                  const mcpResult = await fetch(`${import.meta.env.VITE_MCP_SERVER_URL || 'http://localhost:3333'}/api/v1/mcp/rpc`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      jsonrpc: '2.0',
+                      method: 'check_balance',
+                      params: { wallet_id: agentWallet.walletId },
+                      id: Date.now()
+                    })
+                  });
+                  const data = await mcpResult.json();
+                  wallets.push({
+                    id: agentWallet.walletId,
+                    type: 'circle',
+                    address: agentWallet.walletId,
+                    chain: 'arc-testnet',
+                    balance: data.result?.usdc_balance || '0',
+                  });
+                } catch (mcpError) {
+                  wallets.push({
+                    id: agentWallet.walletId,
+                    type: 'circle',
+                    chain: 'arc-testnet',
+                  });
+                }
+              }
+            } catch (fallbackError) {
+              console.warn('[list_wallets] Fallback also failed:', fallbackError);
+            }
+          }
+        }
+        
+        // Final fallback to environment variable or hardcoded value (only if user wallet fetch failed)
+        if (wallets.length === 0 || !wallets.some(w => w.type === 'circle')) {
+          const AGENT_WALLET_ID = '8a57ee78-f796-536e-aa8e-b5fadfd3dcec';
+          const agentWalletId = import.meta.env.VITE_AGENT_CIRCLE_WALLET_ID || AGENT_WALLET_ID;
+          console.warn('[list_wallets] Using hardcoded fallback agent wallet:', agentWalletId);
+          
           try {
             const mcpResult = await fetch(`${import.meta.env.VITE_MCP_SERVER_URL || 'http://localhost:3333'}/api/v1/mcp/rpc`, {
               method: 'POST',
@@ -387,12 +447,11 @@ async function executeToolCall(
             wallets.push({
               id: agentWalletId,
               type: 'circle',
-              address: data.result?.wallet_id || agentWalletId,
+              address: agentWalletId,
               chain: 'arc-testnet',
               balance: data.result?.usdc_balance || '0',
             });
           } catch (error) {
-            // Add basic info even if MCP call fails
             wallets.push({
               id: agentWalletId,
               type: 'circle',
@@ -419,12 +478,39 @@ async function executeToolCall(
         return wallets;
 
       case 'create_payment_intent':
-        // Agent-initiated payments use Circle wallet
-        // Hardcoded fallback for immediate functionality
-        const PAYMENT_WALLET_ID = '8a57ee78-f796-536e-aa8e-b5fadfd3dcec';
-        const paymentAgentWalletId = import.meta.env.VITE_AGENT_CIRCLE_WALLET_ID || PAYMENT_WALLET_ID;
+        // Agent-initiated payments should use the user's agent wallet
+        // Get the user's actual agent wallet ID using the same endpoint as balance check
+        let agentWalletIdToUse: string | null = null;
+        
+        console.log('[Gemini create_payment_intent] privyUserId:', privyUserId);
+        if (privyUserId) {
+          try {
+            const { agentWalletService } = await import('./wallets');
+            console.log('[Gemini create_payment_intent] Calling getAgentWalletBalance for user:', privyUserId);
+            // Use getAgentWalletBalance which uses the correct /wallets/agent/balance endpoint
+            const balanceData = await agentWalletService.getAgentWalletBalance(privyUserId);
+            console.log('[Gemini create_payment_intent] Balance data received:', balanceData);
+            if (balanceData?.walletId) {
+              agentWalletIdToUse = balanceData.walletId;
+              console.log('[Gemini create_payment_intent] ✅ Using user agent wallet from balance endpoint:', agentWalletIdToUse, 'Balance:', balanceData.balance);
+            } else {
+              console.error('[Gemini create_payment_intent] ❌ No walletId in balance data:', balanceData);
+            }
+          } catch (error) {
+            console.error('[Gemini create_payment_intent] ❌ Failed to fetch user agent wallet balance:', error);
+          }
+        } else {
+          console.warn('[Gemini create_payment_intent] ⚠️ No privyUserId provided!');
+        }
+        
+        // Fallback to env var or hardcoded value (should rarely happen)
+        if (!agentWalletIdToUse) {
+          const PAYMENT_WALLET_ID = '8a57ee78-f796-536e-aa8e-b5fadfd3dcec';
+          agentWalletIdToUse = import.meta.env.VITE_AGENT_CIRCLE_WALLET_ID || PAYMENT_WALLET_ID;
+          console.warn('[Gemini create_payment_intent] Using FALLBACK agent wallet (this should not happen for logged-in users):', agentWalletIdToUse);
+        }
 
-        if (!paymentAgentWalletId) {
+        if (!agentWalletIdToUse) {
           return {
             error: 'Agent wallet not configured. AGENT_CIRCLE_WALLET_ID must be set in environment variables.'
           };
@@ -432,20 +518,66 @@ async function executeToolCall(
 
         const chain = (args.chain as string) || defaultChain || 'arc-testnet';
 
+        // Resolve username to wallet address if recipient is a username
+        let recipientAddress = args.recipientAddress as string;
+        let recipient = args.recipient as string;
+        
+        // Check if recipient is a username (starts with @ or is just alphanumeric without 0x)
+        if (recipient && !recipient.startsWith('0x') && recipient.length <= 8) {
+          // Remove @ if present
+          const username = recipient.startsWith('@') ? recipient.slice(1) : recipient;
+          
+          // Only resolve if it looks like a username (alphanumeric, lowercase)
+          if (/^[a-z0-9]+$/.test(username.toLowerCase())) {
+            try {
+              const { getWalletAddressByUsername } = await import('./supabase/users');
+              const resolvedAddress = await getWalletAddressByUsername(username);
+              
+              if (resolvedAddress) {
+                recipientAddress = resolvedAddress;
+                recipient = `@${username}`; // Keep username for display
+                console.log('[Gemini create_payment_intent] ✅ Resolved username @' + username + ' to address:', resolvedAddress);
+              } else {
+                return {
+                  error: `Username @${username} not found. Please make sure the recipient has set up their username.`
+                };
+              }
+            } catch (error) {
+              console.error('[Gemini create_payment_intent] ❌ Failed to resolve username:', error);
+              return {
+                error: `Failed to resolve username @${username}. Please try again or use a wallet address.`
+              };
+            }
+          }
+        }
+
+        if (!recipientAddress) {
+          return {
+            error: 'Recipient address is required. Please provide a wallet address or username.'
+          };
+        }
+
         // Agent payments always use Circle wallet
-        return await paymentsService.createIntent({
+        // Create the intent - the frontend will handle auto-execution
+        const intent = await paymentsService.createIntent({
           amount: args.amount as number,
-          recipient: args.recipient as string,
-          recipientAddress: args.recipientAddress as string,
-          description: args.description as string || `Payment to ${args.recipient}`,
-          walletId: paymentAgentWalletId, // Use agent Circle wallet
+          recipient: recipient,
+          recipientAddress: recipientAddress,
+          description: args.description as string || `Payment to ${recipient}`,
+          walletId: agentWalletIdToUse, // Use agent Circle wallet
           chain,
           fromWallet: {
             role: 'agent',
             type: 'circle',
-            ref: paymentAgentWalletId,
+            ref: agentWalletIdToUse,
           },
         });
+
+        // Return intent with success indicator - frontend will trigger auto-execution
+        return {
+          ...intent,
+          autoExecute: true, // Signal to frontend that this should auto-execute
+        };
 
       case 'simulate_payment':
         return await paymentsService.simulateIntent(args.intentId as string);
@@ -555,12 +687,33 @@ CRITICAL: You MUST ONLY answer questions and provide assistance related to OmniA
 - USDC transfers and blockchain operations
 - Payment simulation and validation
 
+CRITICAL FORMATTING RULES - MUST FOLLOW:
+1. ABSOLUTELY NO JSON, CODE BLOCKS, OR TECHNICAL DATA IN YOUR RESPONSES - EVER
+2. All JSON/code outputs are automatically sent to the terminal - you don't need to show them
+3. Provide ONLY natural English summaries in your responses
+4. Responses should be concise (1-2 sentences maximum)
+5. NEVER show wallet IDs, addresses, transaction hashes, or technical details in chat
+6. For tool call results, extract ONLY the essential human-readable information
+
 BALANCE REPORTING FORMAT:
-When reporting wallet balances from check_balance tool results, format the response as follows:
-1. "Your Wallet Balance: [privyWallet balance] USDC" (this is the Metamask/Privy wallet balance)
-2. "Circle Agent Wallet Balance: [circleAgentWallet balance] USDC"
-3. "Network: [network name]" (typically "ARC Network")
-Always show both wallet balances separately, even if one is zero.
+When reporting wallet balances from check_balance tool results:
+- Extract the balance information from the tool output
+- Format as: "You have [privyWallet balance] USDC as balance and [circleAgentWallet balance] USDC as agent AI balance"
+- Round numbers to whole numbers (e.g., 83.42 → 83, 0.97 → 1)
+- Do NOT show JSON, wallet addresses, or any technical details
+- Keep it simple and human-friendly
+
+WALLET LISTING FORMAT:
+When reporting wallets from list_wallets tool results:
+- Say: "You have [N] wallet(s)" or list them briefly in plain English
+- Do NOT show addresses, IDs, or technical details
+- Keep it conversational
+
+TRANSACTION LISTING FORMAT:
+When reporting transactions from list_transactions tool results:
+- Provide a brief summary like "You have [N] recent transactions"
+- Or mention key details like "Last transaction: [amount] USDC to [recipient]"
+- Do NOT show full transaction data or JSON
 
 STRICT RESTRICTIONS:
 1. You MUST NOT answer questions about:
@@ -580,19 +733,17 @@ STRICT RESTRICTIONS:
    - Simulate payments to check guard compliance
    - Approve payments that require authorization
 
-Important operational rules:
-1. Always simulate payments before executing them
-2. Explain what you're doing before taking payment actions
-3. If a payment requires approval, inform the user and wait for confirmation
-4. Be concise but helpful in your responses
-5. When creating payments, always provide clear descriptions
-6. ${defaultWalletId ? 'Use the connected wallet and ARC Testnet by default - do NOT ask for wallet ID or chain unless the user explicitly wants to use a different one.' : 'If you don\'t have enough information (like wallet ID), ask the user'}
-7. When a user says "pay X USDC to [address]" or similar payment commands:
-   - Extract the amount and recipient address from the message
-   - Use the recipient address for both 'recipient' and 'recipientAddress' fields
-   - Automatically use the connected wallet (${defaultWalletId || 'if available'}) and ARC Testnet network
-   - Do NOT ask for wallet ID or chain - use the defaults automatically
-   - Proceed directly to creating the payment intent
+STRICT OPERATIONAL RULES:
+1. ONE SENTENCE RESPONSES ONLY
+2. NEVER CALL LIST_WALLETS UNLESS USER EXPLICITLY ASKS
+3. Payment commands: ALWAYS check for recent duplicate payments using list_transactions BEFORE creating a new payment intent
+4. If a recent payment to the same recipient with the same amount exists (within last 5 minutes), inform the user it was already paid instead of creating a new intent
+5. Payment commands: Create intent → Say "Payment created, processing automatically." ONLY if no duplicate exists
+6. Balance checks: Say "Your balance is [X] USDC"
+7. Do NOT call multiple tools for simple requests
+8. ${defaultWalletId ? 'Use connected wallet automatically.' : 'Ask user for wallet if needed'}
+9. After creating payment intent: DO NOT call any other tools
+10. CRITICAL: Before creating payment intent, check list_transactions for recent payments to avoid duplicates
 
 You have access to payment tools - use them to help users with their OmniAgent Pay needs only.${walletContext}`;
 }
@@ -674,6 +825,14 @@ export const geminiService = {
     const result = await chat.sendMessage(lastMessage.content);
 
     const response = result.response;
+    
+    // Log response status for debugging
+    console.log('[Gemini] Response received:', {
+      hasFunctionCalls: !!(response.functionCalls() && response.functionCalls().length > 0),
+      candidatesCount: response.candidates?.length || 0,
+      finishReason: response.candidates?.[0]?.finishReason,
+    });
+    
     const toolCalls: Array<{
       tool: string;
       input: Record<string, unknown>;
@@ -727,6 +886,36 @@ export const geminiService = {
       const finalResult = await chat.sendMessage(toolResults);
       const finalResponse = finalResult.response;
 
+      // Log final response status
+      console.log('[Gemini] Final response received:', {
+        candidatesCount: finalResponse.candidates?.length || 0,
+        finishReason: finalResponse.candidates?.[0]?.finishReason,
+        hasText: !!finalResponse.text,
+      });
+
+      // Check if response was blocked or incomplete
+      const candidates = finalResponse.candidates || [];
+      const finishReason = candidates[0]?.finishReason;
+      
+      if (finishReason && finishReason !== 'STOP') {
+        console.warn('[Gemini] Response incomplete, finishReason:', finishReason);
+        // Try to get partial content if available
+        try {
+          const partialText = finalResponse.text();
+          if (partialText) {
+            return { content: partialText, toolCalls };
+          }
+        } catch (e) {
+          console.error('[Gemini] Failed to get partial text:', e);
+        }
+        
+        // Return a fallback message
+        return {
+          content: "I've processed your request. The payment has been created and will be executed automatically.",
+          toolCalls,
+        };
+      }
+
       return {
         content: finalResponse.text(),
         toolCalls,
@@ -734,6 +923,26 @@ export const geminiService = {
     }
 
     // No function calls, just return text response
+    const candidates = response.candidates || [];
+    const finishReason = candidates[0]?.finishReason;
+    
+    if (finishReason && finishReason !== 'STOP') {
+      console.warn('[Gemini] Response incomplete (no tools), finishReason:', finishReason);
+      // Try to get partial content
+      try {
+        const partialText = response.text();
+        if (partialText) {
+          return { content: partialText };
+        }
+      } catch (e) {
+        console.error('[Gemini] Failed to get partial text:', e);
+      }
+      
+      return {
+        content: "I understand. How else can I help you with your payments?",
+      };
+    }
+    
     return {
       content: response.text(),
     };

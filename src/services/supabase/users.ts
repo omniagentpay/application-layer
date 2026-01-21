@@ -55,10 +55,78 @@ export async function updateUsername(
   walletAddress: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // Note: username and wallet_address columns don't exist in current schema
-    // This function is kept for API compatibility but does nothing
-    // TODO: Add username column to users table if needed
-    console.warn('updateUsername called but username column does not exist in schema');
+    // Normalize username: lowercase, alphanumeric only, max 8 chars
+    const normalizedUsername = username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    
+    if (!normalizedUsername || normalizedUsername.length === 0) {
+      return {
+        success: false,
+        error: 'Username must be at least 1 character',
+      };
+    }
+
+    if (normalizedUsername.length > 8) {
+      return {
+        success: false,
+        error: 'Username must not exceed 8 characters',
+      };
+    }
+
+    if (!/^[a-z0-9]+$/.test(normalizedUsername)) {
+      return {
+        success: false,
+        error: 'Username can only contain lowercase letters and numbers',
+      };
+    }
+
+    // Check if username is already taken by another user
+    const { data: existingUser, error: checkError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('username', normalizedUsername)
+      .neq('id', userId)
+      .single();
+
+    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error checking username availability:', checkError);
+      return {
+        success: false,
+        error: 'Failed to check username availability',
+      };
+    }
+
+    if (existingUser) {
+      return {
+        success: false,
+        error: 'Username is already taken',
+      };
+    }
+
+    // Update username and wallet_address
+    const { error } = await supabase
+      .from('users')
+      .update({
+        username: normalizedUsername,
+        wallet_address: walletAddress,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId);
+
+    if (error) {
+      // Check if it's a unique constraint violation
+      if (error.code === '23505') {
+        return {
+          success: false,
+          error: 'Username is already taken',
+        };
+      }
+      console.error('Failed to update username:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to update username',
+      };
+    }
+
     return { success: true };
   } catch (error) {
     console.error('Failed to update username:', error);
@@ -104,13 +172,77 @@ export async function checkUsernameAvailability(
   excludeUserId?: string
 ): Promise<boolean> {
   try {
-    // Note: username column doesn't exist in current schema
-    // This function always returns true for API compatibility
-    // TODO: Add username column to users table if needed
-    console.warn('checkUsernameAvailability called but username column does not exist in schema');
-    return true;
+    // Normalize username
+    const normalizedUsername = username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    
+    if (!normalizedUsername || normalizedUsername.length === 0) {
+      return false;
+    }
+
+    let query = supabase
+      .from('users')
+      .select('id')
+      .eq('username', normalizedUsername);
+
+    if (excludeUserId) {
+      query = query.neq('id', excludeUserId);
+    }
+
+    const { data, error } = await query.single();
+
+    // If no rows found (PGRST116), username is available
+    if (error && error.code === 'PGRST116') {
+      return true;
+    }
+
+    // If error occurred, return false to be safe
+    if (error) {
+      console.error('Error checking username availability:', error);
+      return false;
+    }
+
+    // If data exists, username is taken
+    return !data;
   } catch (error) {
     console.error('Failed to check username availability:', error);
     return false;
+  }
+}
+
+/**
+ * Get user wallet address by username
+ */
+export async function getWalletAddressByUsername(username: string): Promise<string | null> {
+  try {
+    const normalizedUsername = username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    
+    if (!normalizedUsername) {
+      return null;
+    }
+
+    // Remove @ if present
+    const cleanUsername = normalizedUsername.startsWith('@') 
+      ? normalizedUsername.slice(1) 
+      : normalizedUsername;
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('wallet_address')
+      .eq('username', cleanUsername)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // User not found
+        return null;
+      }
+      console.error('Error fetching wallet address by username:', error);
+      return null;
+    }
+
+    return data?.wallet_address || null;
+  } catch (error) {
+    console.error('Failed to get wallet address by username:', error);
+    return null;
   }
 }

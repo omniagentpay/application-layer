@@ -111,28 +111,27 @@ export function ProtectedRoute({ children }: ProtectedRouteProps) {
 
       setSupabaseUserId(userId);
 
-      // Auto-create Circle agent wallet if it doesn't exist
-      try {
-        const agentWallet = await agentWalletService.getAgentWallet(privyUserId);
-        if (!agentWallet) {
-          // Wallet doesn't exist, create it
-          await agentWalletService.createAgentWallet(privyUserId);
-        }
-      } catch (error) {
-        console.error('Error ensuring agent wallet exists:', error);
-        // Don't block user from accessing app if wallet creation fails
-        // They can create it manually from the Wallet Management page
-      }
+      // Auto-create Circle agent wallet if it doesn't exist (non-blocking)
+      // Run in background to not block UI initialization
+      agentWalletService.getAgentWallet(privyUserId)
+        .then(agentWallet => {
+          if (!agentWallet) {
+            // Wallet doesn't exist, create it
+            return agentWalletService.createAgentWallet(privyUserId);
+          }
+        })
+        .catch(error => {
+          console.error('Error ensuring agent wallet exists:', error);
+          // Don't block user from accessing app if wallet creation fails
+          // They can create it manually from the Wallet Management page
+        });
 
-      // Check if onboarding is completed
-      // Note: onboarding_completed column doesn't exist in current schema
-      // Skip onboarding check for now
-      // const userData = await getUserByPrivyId(privyUserId);
-      // if (userData && !userData.onboarding_completed) {
-      //   setShowOnboarding(true);
-      // }
-
+      // Set loading to false immediately after user setup
+      // Wallet creation happens in background
       setLoading(false);
+
+      // Note: Loading is set to false above after user setup
+      // Wallet creation happens in background and doesn't block UI
     } catch (error) {
       console.error('Error initializing user:', error);
       setLoading(false);

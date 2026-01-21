@@ -8,12 +8,14 @@ const OrbMaterial = ({ color }: { color: string }) => {
   const materialRef = useRef<THREE.ShaderMaterial>(null);
   const timeRef = useRef(0);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
     if (materialRef.current) {
-      timeRef.current += 0.01;
+      // Use delta time for frame-rate independent animation
+      timeRef.current += delta * 0.5;
       materialRef.current.uniforms.time.value = timeRef.current;
       const mouse = materialRef.current.uniforms.mouse.value;
-      mouse.lerp(new THREE.Vector2(state.mouse.x * 0.5, state.mouse.y * 0.5), 0.1);
+      // Throttle mouse updates for better performance
+      mouse.lerp(new THREE.Vector2(state.mouse.x * 0.5, state.mouse.y * 0.5), 0.05);
     }
   });
 
@@ -71,17 +73,19 @@ const OrbMaterial = ({ color }: { color: string }) => {
 
 const Orb = () => {
   const meshRef = useRef<THREE.Mesh>(null);
+  const rotationSpeed = useMemo(() => ({ x: 0.001, y: 0.002 }), []);
 
   useFrame(() => {
     if (meshRef.current) {
-      meshRef.current.rotation.x += 0.001;
-      meshRef.current.rotation.y += 0.002;
+      meshRef.current.rotation.x += rotationSpeed.x;
+      meshRef.current.rotation.y += rotationSpeed.y;
     }
   });
 
+  // Reduced geometry complexity for better performance (16x16 instead of 32x32)
   return (
     <mesh ref={meshRef}>
-      <sphereGeometry args={[1, 32, 32]} />
+      <sphereGeometry args={[1, 16, 16]} />
       <OrbMaterial color="#22c55e" />
     </mesh>
   );
@@ -90,6 +94,7 @@ const Orb = () => {
 export function AgentOrb() {
   const { theme } = useTheme();
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -100,17 +105,40 @@ export function AgentOrb() {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
-  if (prefersReducedMotion) {
+  // Gracefully handle errors
+  useEffect(() => {
+    const handleError = (e: ErrorEvent) => {
+      if (e.message?.includes('scheduler') || e.message?.includes('@react-three')) {
+        console.warn('[AgentOrb] Failed to load, skipping orb animation');
+        setHasError(true);
+      }
+    };
+    
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
+
+  if (prefersReducedMotion || hasError) {
     return null;
   }
 
-  return (
-    <div className="absolute inset-0 pointer-events-none opacity-20">
-      <Canvas camera={{ position: [0, 0, 3], fov: 50 }}>
-        <ambientLight intensity={0.5} />
-        <pointLight position={[10, 10, 10]} intensity={0.5} />
-        <Orb />
-      </Canvas>
-    </div>
-  );
+  try {
+    return (
+      <div className="absolute inset-0 pointer-events-none opacity-20" style={{ willChange: 'transform' }}>
+        <Canvas 
+          camera={{ position: [0, 0, 3], fov: 50 }}
+          dpr={[1, 1.5]} // Limit pixel ratio for better performance
+          gl={{ antialias: false, alpha: true }} // Disable antialiasing for performance
+          performance={{ min: 0.5 }} // Lower performance threshold
+        >
+          <ambientLight intensity={0.5} />
+          <pointLight position={[10, 10, 10]} intensity={0.5} />
+          <Orb />
+        </Canvas>
+      </div>
+    );
+  } catch (error) {
+    console.warn('[AgentOrb] Error rendering orb:', error);
+    return null;
+  }
 }

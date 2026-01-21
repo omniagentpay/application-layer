@@ -66,7 +66,7 @@
     }
   }
 
-  /* Typography scale - Premium Inter-based */
+  /* Typography scale - Stripe-style refined weights */
   h1 {
     @apply text-3xl font-semibold tracking-tight;
     font-family: var(--font-sans);
@@ -89,6 +89,7 @@
 
   body {
     font-family: var(--font-sans);
+    font-weight: 400;
   }
 }
 
@@ -120,26 +121,7 @@
     word-break: break-word;
   }
 
-  /* Status chip variants */
-  .status-chip {
-    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
-  }
-
-  .status-succeeded {
-    @apply bg-success/10 text-success;
-  }
-
-  .status-pending {
-    @apply bg-warning/10 text-warning;
-  }
-
-  .status-failed {
-    @apply bg-destructive/10 text-destructive;
-  }
-
-  .status-blocked {
-    @apply bg-muted text-muted-foreground;
-  }
+  /* Status chip variants - Stripe-style (handled inline in StatusChip component) */
 
   /* Code block styling */
   .code-block {

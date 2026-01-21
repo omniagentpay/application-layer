@@ -69,21 +69,22 @@ export default function SettingsPage() {
   };
 
   const handleUsernameChange = async (value: string) => {
-    const normalizedValue = value.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    // Only allow lowercase letters and numbers, max 8 characters
+    const normalizedValue = value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
     setUsername(normalizedValue);
     setUsernameError('');
 
     if (normalizedValue.length > 0) {
-      if (normalizedValue.length < 3) {
-        setUsernameError('Username must be at least 3 characters');
+      if (normalizedValue.length < 1) {
+        setUsernameError('Username must be at least 1 character');
         return;
       }
-      if (normalizedValue.length > 20) {
-        setUsernameError('Username must be less than 20 characters');
+      if (normalizedValue.length > 8) {
+        setUsernameError('Username must not exceed 8 characters');
         return;
       }
-      if (!/^[a-zA-Z0-9_]+$/.test(normalizedValue)) {
-        setUsernameError('Username can only contain letters, numbers, and underscores');
+      if (!/^[a-z0-9]+$/.test(normalizedValue)) {
+        setUsernameError('Username can only contain lowercase letters and numbers');
         return;
       }
 
@@ -132,6 +133,9 @@ export default function SettingsPage() {
         title: 'Success',
         description: `Username @${username} saved successfully!`,
       });
+      
+      // Dispatch event to refresh username warning banner
+      window.dispatchEvent(new CustomEvent('username-updated'));
     } catch (error) {
       console.error('Error saving username:', error);
       setUsernameError('Failed to save username. Please try again.');
@@ -200,7 +204,7 @@ export default function SettingsPage() {
                   value={username}
                   onChange={(e) => handleUsernameChange(e.target.value)}
                   className="pl-10"
-                  maxLength={20}
+                  maxLength={8}
                   disabled={savingUsername}
                 />
                 {checkingUsername && (

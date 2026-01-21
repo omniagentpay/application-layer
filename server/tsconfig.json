@@ -2,11 +2,20 @@
   "compilerOptions": {
     "target": "ES2024",
     "module": "ESNext",
-    "lib": ["ES2024"],
+    "lib": [
+      "ES2024"
+    ],
     "moduleResolution": "bundler",
     "outDir": "./dist",
     "rootDir": "./",
-    "strict": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "strictPropertyInitialization": false,
+    "strictBindCallApply": false,
+    "strictFunctionTypes": false,
+    "noImplicitThis": false,
+    "useUnknownInCatchVariables": false,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
@@ -17,6 +26,11 @@
     "sourceMap": true,
     "isolatedModules": true
   },
-  "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

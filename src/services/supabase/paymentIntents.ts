@@ -6,16 +6,32 @@ import type { PaymentIntent } from '@/types';
  */
 export async function getPaymentIntentsFromSupabase(userId: string): Promise<PaymentIntent[]> {
   try {
+    // Convert UUID to string if needed (payment_intents.user_id is TEXT)
+    const userIdStr = String(userId);
+    console.log('[getPaymentIntentsFromSupabase] Fetching payment intents for user:', { userId, userIdStr });
+    
     const { data, error } = await supabase
       .from('payment_intents')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', userIdStr)
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error fetching payment intents from Supabase:', error);
+      console.error('[getPaymentIntentsFromSupabase] Supabase error:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+        userId,
+      });
       return [];
     }
+
+    console.log('[getPaymentIntentsFromSupabase] Fetched payment intents:', {
+      count: data?.length || 0,
+      userId,
+      intents: data?.map(i => ({ id: i.id, status: i.status, amount: i.amount })),
+    });
 
     // Transform Supabase data to PaymentIntent type
     return (data || []).map((intent: any) => ({
@@ -38,7 +54,11 @@ export async function getPaymentIntentsFromSupabase(userId: string): Promise<Pay
       updatedAt: intent.updated_at || intent.created_at || new Date().toISOString(),
     }));
   } catch (error) {
-    console.error('Error in getPaymentIntentsFromSupabase:', error);
+    console.error('[getPaymentIntentsFromSupabase] Unexpected error:', {
+      error,
+      userId,
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
     return [];
   }
 }

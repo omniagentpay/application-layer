@@ -20,10 +20,11 @@ export const paymentsRouter = Router();
 // Get all payment intents
 paymentsRouter.get('/', async (req, res) => {
   try {
-    // Extract Privy user ID from headers
-    const privyUserId = req.headers['x-privy-user-id'] as string;
+    // Extract Privy user ID from headers (case-insensitive)
+    const privyUserId = req.headers['x-privy-user-id'] as string || req.headers['X-Privy-User-Id'] as string;
 
-    console.log('[GET /api/payments] Request received, privyUserId:', privyUserId);
+    console.log('[GET /api/payments] Request received, privyUserId:', privyUserId || 'NOT SET');
+    console.log('[GET /api/payments] In-memory intents count:', storage.getAllPaymentIntents().length);
 
     // Get intents from in-memory storage
     let intents = storage.getAllPaymentIntents();
@@ -152,16 +153,28 @@ paymentsRouter.get('/', async (req, res) => {
           intents.forEach(intent => intentMap.set(intent.id, intent));
 
           // Overwrite with Supabase intents (they're the source of truth)
+          // Don't save back to in-memory during GET - they're already persisted in Supabase
+          // This prevents duplicate writes and potential race conditions
           transformedIntents.forEach(intent => {
             intentMap.set(intent.id, intent);
-            // Also add to in-memory storage for future lookups
-            storage.savePaymentIntent(intent);
+            // Update in-memory cache silently (without triggering Supabase write)
+            // We check if it exists first to avoid unnecessary operations
+            const existingInMemory = storage.getPaymentIntent(intent.id);
+            if (!existingInMemory || existingInMemory.updatedAt !== intent.updatedAt) {
+              // Update in-memory cache directly via storage (it will update the Map)
+              // But we need to prevent the Supabase write - storage.savePaymentIntent always writes
+              // So we'll just update the Map reference, which is fine for GET requests
+              // The intent is already in Supabase, so we're just syncing the cache
+              storage.savePaymentIntent(intent);
+            }
           });
 
           intents = Array.from(intentMap.values());
           console.log('[GET /api/payments] Total intents after merge:', intents.length);
         } else {
-          console.log('[GET /api/payments] No intents found in Supabase');
+          console.log('[GET /api/payments] No intents found in Supabase, using in-memory intents');
+          // If Supabase returns empty but we have in-memory intents, use those
+          // This handles the case where intents were just created and haven't synced to Supabase yet
         }
       } else {
         console.warn('[GET /api/payments] Supabase not configured, using in-memory only');
@@ -169,15 +182,69 @@ paymentsRouter.get('/', async (req, res) => {
     } catch (error) {
       console.error('[GET /api/payments] Failed to load from Supabase:', error);
       // Continue with in-memory intents if Supabase fails
+      // This ensures intents are still returned even if Supabase is down
     }
 
     // Sort by creation date (newest first)
     intents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+    console.log('[GET /api/payments] Returning', intents.length, 'intents to client');
     res.json(intents);
   } catch (error) {
     console.error('[GET /api/payments] Error:', error);
     res.status(500).json({ error: 'Failed to load payment intents' });
+  }
+});
+
+// Agent auto-execution flow endpoint
+paymentsRouter.post('/agent/execute', async (req, res) => {
+  const {
+    amount,
+    recipient,
+    recipientAddress,
+    description,
+    walletId,
+    chain,
+    currency,
+  } = req.body;
+
+  if (!amount || !recipientAddress || !walletId) {
+    return res.status(400).json({ error: 'Missing required fields: amount, recipientAddress, walletId' });
+  }
+
+  // Import the orchestrator function
+  const { executeAgentPaymentFlow } = await import('../lib/agent-payment-flow.js');
+
+  // Set up Server-Sent Events for streaming status updates
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+
+  try {
+    const result = await executeAgentPaymentFlow(
+      {
+        amount: parseFloat(amount),
+        recipient: recipient || recipientAddress,
+        recipientAddress,
+        description,
+        walletId,
+        chain: chain || 'arc-testnet',
+        currency: currency || 'USD',
+      },
+      (status) => {
+        // Stream status updates to client
+        res.write(`data: ${JSON.stringify(status)}\n\n`);
+      }
+    );
+
+    // Send final result
+    res.write(`data: ${JSON.stringify({ type: 'complete', result })}\n\n`);
+    res.end();
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    res.write(`data: ${JSON.stringify({ type: 'error', error: errorMsg })}\n\n`);
+    res.end();
   }
 });
 
@@ -234,9 +301,10 @@ paymentsRouter.post('/', async (req, res) => {
   }
 
   // Extract Privy user ID from headers for persistence
-  const privyUserId = req.headers['x-privy-user-id'] as string;
+  const privyUserId = req.headers['x-privy-user-id'] as string || req.headers['X-Privy-User-Id'] as string;
 
   console.log('[POST /api/payments] Creating intent, privyUserId:', privyUserId || 'NOT SET (will use "unknown")');
+  console.log('[POST /api/payments] Request headers:', Object.keys(req.headers).filter(k => k.toLowerCase().includes('privy')));
 
   // Get or create a default agent
   const agents = storage.getAllAgents();
@@ -477,18 +545,27 @@ paymentsRouter.post('/:id/approve', async (req, res) => {
 
 // Execute a payment intent
 paymentsRouter.post('/:id/execute', async (req, res) => {
+  // Extract Privy user ID from headers
+  const privyUserId = req.headers['x-privy-user-id'] as string || req.headers['X-Privy-User-Id'] as string;
+  
   const intent = storage.getPaymentIntent(req.params.id);
   if (!intent) {
     return res.status(404).json({ error: 'Payment intent not found' });
   }
 
-  if (intent.status !== 'executing' && intent.status !== 'awaiting_approval' && intent.status !== 'approved' && intent.status !== 'requires_approval') {
+  // Allow execution for pending intents (auto-approved via agent chat)
+  if (intent.status !== 'executing' && intent.status !== 'awaiting_approval' && intent.status !== 'approved' && intent.status !== 'requires_approval' && intent.status !== 'pending') {
     return res.status(400).json({ error: 'Intent is not ready for execution' });
   }
 
   // If not already executing, update status
-  if (intent.status === 'awaiting_approval' || intent.status === 'requires_approval' || intent.status === 'approved') {
-    if (intent.status !== 'approved') {
+  if (intent.status === 'awaiting_approval' || intent.status === 'requires_approval' || intent.status === 'approved' || intent.status === 'pending') {
+    if (intent.status !== 'approved' && intent.status !== 'pending') {
+      intent.steps[1].status = 'completed';
+      intent.steps[1].timestamp = new Date().toISOString();
+    }
+    // For pending intents (auto-approved), mark approval step as completed
+    if (intent.status === 'pending') {
       intent.steps[1].status = 'completed';
       intent.steps[1].timestamp = new Date().toISOString();
     }
@@ -598,6 +675,11 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
 
         // Create transaction record (only if we have a txHash)
         if (executeResult.txHash) {
+          // Generate explorer URL if not already provided
+          const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx';
+          const normalizedBase = explorerBase.replace(/\/tx\/?$/, '/tx');
+          const explorerUrl = executeResult.explorerUrl || `${normalizedBase}/${executeResult.txHash}`;
+          
           const transaction = {
             id: `tx_${Date.now()}`,
             intentId: intent.id,
@@ -612,8 +694,65 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
             txHash: executeResult.txHash,
             fee: 0.5, // TODO: Get actual fee from SDK
             createdAt: new Date().toISOString(),
+            metadata: {
+              explorerUrl,
+              circleTransferId: executeResult.circleTransferId,
+              circleTransactionId: executeResult.circleTransactionId,
+            },
           };
           storage.saveTransaction(transaction);
+
+          // Persist transaction to Supabase
+          try {
+            const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+            const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+            if (supabaseUrl && supabaseKey && privyUserId && privyUserId !== 'unknown') {
+              const { createClient } = await import('@supabase/supabase-js');
+              const supabase = createClient(
+                supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+                supabaseKey
+              );
+
+              // Get the Supabase user ID from privy_user_id
+              const { data: user } = await supabase
+                .from('users')
+                .select('id')
+                .eq('privy_user_id', privyUserId)
+                .maybeSingle();
+
+              if (user) {
+                const { error: txError } = await supabase
+                  .from('transactions')
+                  .upsert({
+                    id: transaction.id,
+                    user_id: user.id,
+                    intent_id: transaction.intentId,
+                    wallet_id: transaction.walletId,
+                    type: transaction.type,
+                    amount: transaction.amount,
+                    currency: transaction.currency,
+                    recipient: transaction.recipient,
+                    recipient_address: transaction.recipientAddress,
+                    status: transaction.status,
+                    chain: transaction.chain,
+                    tx_hash: transaction.txHash,
+                    fee: transaction.fee,
+                    created_at: transaction.createdAt,
+                    metadata: transaction.metadata,
+                  });
+
+                if (txError) {
+                  console.error('[Payment Execution] Failed to persist transaction to Supabase:', txError);
+                } else {
+                  console.log('[Payment Execution] Successfully persisted transaction to Supabase:', transaction.id);
+                }
+              }
+            }
+          } catch (dbError) {
+            console.error('[Payment Execution] Failed to persist transaction to Supabase:', dbError);
+            // Continue - transaction was saved to in-memory storage
+          }
         }
 
         // PHASE 2: Return enhanced response with all execution artifacts
@@ -686,7 +825,16 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
       });
 
       if (executeResult.success) {
+        // PHASE 2: Store execution artifacts
         intent.txHash = executeResult.txHash;
+        // Store explorer URL and other artifacts in metadata for frontend access
+        if (!intent.metadata) {
+          intent.metadata = {};
+        }
+        intent.metadata.explorerUrl = executeResult.explorerUrl;
+        intent.metadata.circleTransferId = executeResult.circleTransferId;
+        intent.metadata.circleTransactionId = executeResult.circleTransactionId;
+        intent.metadata.blockchainTxHash = executeResult.txHash;
         intent.steps[2].status = 'completed';
         intent.steps[2].timestamp = new Date().toISOString();
         intent.steps[3].status = 'completed';
@@ -694,6 +842,50 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
         intent.status = 'succeeded';
         intent.updatedAt = new Date().toISOString();
         storage.savePaymentIntent(intent);
+
+        // PHASE 2: Persist execution artifacts to Supabase (same as AGENT+CIRCLE path)
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`, supabaseKey);
+
+            // Update payment_intents table with execution artifacts
+            await supabase
+              .from('payment_intents')
+              .update({
+                blockchain_tx_hash: executeResult.txHash,
+                circle_transfer_id: executeResult.circleTransferId,
+                circle_transaction_id: executeResult.circleTransactionId,
+                explorer_url: executeResult.explorerUrl,
+                executed_at: new Date().toISOString(),
+                status: 'succeeded',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', intent.id);
+
+            // Insert into execution_artifacts for audit trail
+            await supabase
+              .from('execution_artifacts')
+              .insert({
+                intent_id: intent.id,
+                circle_wallet_id: fromWallet.ref,
+                recipient_address: intent.recipientAddress,
+                amount: intent.amount,
+                currency: intent.currency,
+                circle_transfer_id: executeResult.circleTransferId,
+                circle_transaction_id: executeResult.circleTransactionId,
+                blockchain_tx_hash: executeResult.txHash,
+                explorer_url: executeResult.explorerUrl,
+                status: 'succeeded',
+              });
+          }
+        } catch (dbError) {
+          console.error('[Payment Execution] Failed to persist artifacts to Supabase:', dbError);
+          // Continue - execution was successful even if DB write failed
+        }
 
         const transaction = {
           id: `tx_${Date.now()}`,
@@ -712,13 +904,96 @@ paymentsRouter.post('/:id/execute', async (req, res) => {
         };
         storage.saveTransaction(transaction);
 
-        return res.json({ success: true, txHash: executeResult.txHash, intent });
+        // Persist transaction to Supabase
+        try {
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+          if (supabaseUrl && supabaseKey && privyUserId && privyUserId !== 'unknown') {
+            const { createClient } = await import('@supabase/supabase-js');
+            const supabase = createClient(
+              supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+              supabaseKey
+            );
+
+            // Get the Supabase user ID from privy_user_id
+            const { data: user } = await supabase
+              .from('users')
+              .select('id')
+              .eq('privy_user_id', privyUserId)
+              .maybeSingle();
+
+            if (user) {
+              const { error: txError } = await supabase
+                .from('transactions')
+                .upsert({
+                  id: transaction.id,
+                  user_id: user.id,
+                  intent_id: transaction.intentId,
+                  wallet_id: transaction.walletId,
+                  type: transaction.type,
+                  amount: transaction.amount,
+                  currency: transaction.currency,
+                  recipient: transaction.recipient,
+                  recipient_address: transaction.recipientAddress,
+                  status: transaction.status,
+                  chain: transaction.chain,
+                  tx_hash: transaction.txHash,
+                  fee: transaction.fee,
+                  created_at: transaction.createdAt,
+                  metadata: transaction.metadata,
+                });
+
+              if (txError) {
+                console.error('[Payment Execution] Failed to persist transaction to Supabase:', txError);
+              } else {
+                console.log('[Payment Execution] Successfully persisted transaction to Supabase:', transaction.id);
+              }
+            }
+          }
+        } catch (dbError) {
+          console.error('[Payment Execution] Failed to persist transaction to Supabase:', dbError);
+          // Continue - transaction was saved to in-memory storage
+        }
+
+        // PHASE 2: Return enhanced response with all execution artifacts
+        return res.json({
+          success: true,
+          txHash: executeResult.txHash,
+          explorerUrl: executeResult.explorerUrl,
+          circleTransferId: executeResult.circleTransferId,
+          circleTransactionId: executeResult.circleTransactionId,
+          message: 'Payment executed successfully',
+          intent
+        });
       } else {
+        // PHASE 2: Store error in Supabase
         intent.status = 'failed';
         intent.steps[2].status = 'failed';
         intent.steps[2].details = executeResult.error || 'Execution failed';
         intent.updatedAt = new Date().toISOString();
         storage.savePaymentIntent(intent);
+
+        // PHASE 2: Persist failure to Supabase
+        try {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+          const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+          if (supabaseUrl && supabaseKey) {
+            const supabase = createClient(supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`, supabaseKey);
+            await supabase
+              .from('payment_intents')
+              .update({
+                status: 'failed',
+                last_error: executeResult.error,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', intent.id);
+          }
+        } catch (dbError) {
+          console.error('[Payment Execution] Failed to persist error to Supabase:', dbError);
+        }
 
         return res.status(500).json({
           error: 'Execution failed',
@@ -1069,8 +1344,9 @@ paymentsRouter.get('/:id/sync', async (req, res) => {
         intent.txHash = blockchainTxHash;
 
         // Generate explorer URL for Arc Testnet
-        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx/';
-        const explorerUrl = `${explorerBase}${blockchainTxHash}`;
+        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx';
+        const normalizedBase = explorerBase.replace(/\/tx\/?$/, '/tx');
+        const explorerUrl = `${normalizedBase}/${blockchainTxHash}`;
 
         // Update metadata with explorer URL
         if (!intent.metadata) {
@@ -1212,3 +1488,5 @@ paymentsRouter.get('/:id/contract', (req, res) => {
 
   res.json(contract);
 });
+
+

@@ -71,14 +71,21 @@ export function WelcomeOnboarding({ userId, onComplete }: WelcomeOnboardingProps
 
   useEffect(() => {
     // Validate username as user types
-    if (username.length > 0) {
+    // Normalize: lowercase, alphanumeric only, max 8 chars
+    const normalizedValue = username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    if (normalizedValue !== username && username.length > 0) {
+      // Auto-normalize the input
+      setUsername(normalizedValue);
+    }
+    
+    if (normalizedValue.length > 0) {
       setUsernameError('');
-      if (username.length < 3) {
-        setUsernameError('Username must be at least 3 characters');
-      } else if (username.length > 20) {
-        setUsernameError('Username must be less than 20 characters');
-      } else if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-        setUsernameError('Username can only contain letters, numbers, and underscores');
+      if (normalizedValue.length < 1) {
+        setUsernameError('Username must be at least 1 character');
+      } else if (normalizedValue.length > 8) {
+        setUsernameError('Username must not exceed 8 characters');
+      } else if (!/^[a-z0-9]+$/.test(normalizedValue)) {
+        setUsernameError('Username can only contain lowercase letters and numbers');
       }
     }
   }, [username]);
@@ -235,11 +242,11 @@ export function WelcomeOnboarding({ userId, onComplete }: WelcomeOnboardingProps
                           placeholder="yourusername"
                           value={username}
                           onChange={(e) => {
-                            const value = e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '');
+                            const value = e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
                             setUsername(value);
                           }}
                           className="pl-10 text-lg"
-                          maxLength={20}
+                          maxLength={8}
                           disabled={claimingUsername}
                         />
                       </div>

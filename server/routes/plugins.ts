@@ -147,6 +147,11 @@ pluginsRouter.post('/simulate-order', async (req, res) => {
             intent.steps[3].status = 'completed';
             
             // Create transaction
+            // Generate explorer URL if not already provided
+            const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx';
+            const normalizedBase = explorerBase.replace(/\/tx\/?$/, '/tx');
+            const explorerUrl = executeResult.explorerUrl || `${normalizedBase}/${executeResult.txHash}`;
+            
             const transaction = {
               id: `tx_${Date.now()}`,
               intentId: intent.id,
@@ -161,6 +166,11 @@ pluginsRouter.post('/simulate-order', async (req, res) => {
               txHash: executeResult.txHash,
               fee: 0.5,
               createdAt: new Date().toISOString(),
+              metadata: {
+                explorerUrl,
+                circleTransferId: executeResult.circleTransferId,
+                circleTransactionId: executeResult.circleTransactionId,
+              },
             };
             storage.saveTransaction(transaction);
           }

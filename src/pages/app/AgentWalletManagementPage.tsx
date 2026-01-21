@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { usePrivy } from '@privy-io/react-auth';
 import { PageHeader } from '@/components/PageHeader';
 import { LoadingSkeleton } from '@/components/LoadingSkeleton';
@@ -36,6 +36,8 @@ export default function AgentWalletManagementPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const hasShownCreationNotification = useRef(false);
+  const createdWalletAddress = useRef<string | null>(null);
 
   useEffect(() => {
     if (authenticated && user?.id) {
@@ -54,7 +56,18 @@ export default function AgentWalletManagementPage() {
       if (!wallet) {
         try {
           wallet = await agentWalletService.createAgentWallet(user.id);
-          toast.success('Agent wallet created successfully!');
+          
+          // Only show notification if this is a new wallet creation (not already shown for this wallet)
+          const walletAddress = wallet.address;
+          const notificationKey = `wallet_created_${walletAddress}`;
+          const hasBeenNotified = sessionStorage.getItem(notificationKey);
+          
+          if (!hasBeenNotified && !hasShownCreationNotification.current) {
+            toast.success('Agent wallet created successfully!');
+            sessionStorage.setItem(notificationKey, 'true');
+            hasShownCreationNotification.current = true;
+            createdWalletAddress.current = walletAddress;
+          }
         } catch (createError) {
           // If creation fails, show error but don't set wallet
           const errorMessage = createError instanceof Error ? createError.message : 'Unknown error occurred';
@@ -67,6 +80,13 @@ export default function AgentWalletManagementPage() {
           }
           setLoading(false);
           return;
+        }
+      } else {
+        // Wallet already exists - check if it's a different wallet than the one we created
+        // If it's a different wallet, reset the notification flag
+        if (createdWalletAddress.current && createdWalletAddress.current !== wallet.address) {
+          hasShownCreationNotification.current = false;
+          createdWalletAddress.current = null;
         }
       }
 
@@ -119,6 +139,15 @@ export default function AgentWalletManagementPage() {
     try {
       const newWallet = await agentWalletService.resetAgentWallet(user.id);
       setAgentWallet(newWallet);
+      
+      // Clear the old wallet's notification flag and reset refs for the new wallet
+      if (createdWalletAddress.current) {
+        const oldNotificationKey = `wallet_created_${createdWalletAddress.current}`;
+        sessionStorage.removeItem(oldNotificationKey);
+      }
+      hasShownCreationNotification.current = false;
+      createdWalletAddress.current = null;
+      
       toast.success('Agent wallet reset successfully', {
         description: 'A new wallet has been created. The old wallet has been disabled.',
       });

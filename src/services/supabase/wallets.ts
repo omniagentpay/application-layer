@@ -6,16 +6,32 @@ import type { Wallet } from '@/types';
  */
 export async function getWalletsFromSupabase(userId: string): Promise<Wallet[]> {
   try {
+    // Convert UUID to string if needed (PostgreSQL handles UUID/TEXT comparison, but be explicit)
+    const userIdStr = String(userId);
+    console.log('[getWalletsFromSupabase] Fetching wallets for user:', { userId, userIdStr });
+    
     const { data, error } = await supabase
       .from('wallets')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', userIdStr)
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error fetching wallets from Supabase:', error);
+      console.error('[getWalletsFromSupabase] Supabase error:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+        userId,
+      });
       return [];
     }
+
+    console.log('[getWalletsFromSupabase] Fetched wallets:', {
+      count: data?.length || 0,
+      userId,
+      wallets: data?.map(w => ({ id: w.id, address: w.address, status: w.status })),
+    });
 
     // Transform Supabase data to Wallet type
     return (data || []).map((wallet: any) => ({
@@ -29,7 +45,11 @@ export async function getWalletsFromSupabase(userId: string): Promise<Wallet[]> 
       updatedAt: wallet.updated_at || wallet.created_at || new Date().toISOString(),
     }));
   } catch (error) {
-    console.error('Error in getWalletsFromSupabase:', error);
+    console.error('[getWalletsFromSupabase] Unexpected error:', {
+      error,
+      userId,
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
     return [];
   }
 }

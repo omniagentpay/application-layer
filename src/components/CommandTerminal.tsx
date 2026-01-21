@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, KeyboardEvent, useMemo } from 'react';
 import { useWallets } from '@privy-io/react-auth';
 import { cn } from '@/lib/utils';
 import { walletsService } from '@/services/wallets';
@@ -14,9 +14,15 @@ interface TerminalLog {
 
 interface CommandTerminalProps {
   className?: string;
+  externalLogs?: Array<{
+    id: string;
+    timestamp: Date;
+    type: 'command' | 'output' | 'error';
+    content: string;
+  }>;
 }
 
-export function CommandTerminal({ className }: CommandTerminalProps) {
+export function CommandTerminal({ className, externalLogs = [] }: CommandTerminalProps) {
   const { wallets: privyWallets } = useWallets();
   const [logs, setLogs] = useState<TerminalLog[]>([
     {
@@ -39,7 +45,33 @@ export function CommandTerminal({ className }: CommandTerminalProps) {
 
   useEffect(() => {
     scrollToBottom();
-  }, [logs]);
+  }, [logs.length]); // Scroll when logs change
+
+  // Merge external logs into local logs
+  // Track processed log IDs to avoid duplicates
+  const processedLogIdsRef = useRef<Set<string>>(new Set());
+  
+  useEffect(() => {
+    if (externalLogs && externalLogs.length > 0) {
+      setLogs((prev) => {
+        // Find logs that haven't been processed yet
+        const newLogs = externalLogs.filter(log => {
+          if (processedLogIdsRef.current.has(log.id)) {
+            return false; // Already processed
+          }
+          processedLogIdsRef.current.add(log.id); // Mark as processed
+          return true;
+        });
+        
+        if (newLogs.length > 0) {
+          // Scroll to bottom after adding new logs
+          setTimeout(() => scrollToBottom(), 100);
+          return [...prev, ...newLogs];
+        }
+        return prev;
+      });
+    }
+  }, [externalLogs]);
 
   useEffect(() => {
     // Focus input on mount
@@ -200,7 +232,7 @@ Connected via Privy — execution handled by backend agents.`
           );
         }
 
-      case 'simulate':
+      case 'simulate': {
         if (args.length < 3) {
           return formatOutput(
             'payment-agent-01',
@@ -250,8 +282,9 @@ ${simResult.requiresApproval ? '⚠️  Requires approval before execution.' : '
             `Error: ${error instanceof Error ? error.message : 'Failed to simulate payment'}`
           );
         }
+      }
 
-      case 'pay':
+      case 'pay': {
         if (args.length === 0) {
           return formatOutput('payment-agent-01', 'pay', 'Error: Please specify intent_id.\nUsage: pay <intent_id>');
         }
@@ -294,6 +327,7 @@ Note: Execution is handled by backend agents. This is a controlled interface.`
             `Error: ${error instanceof Error ? error.message : 'Failed to execute payment'}`
           );
         }
+      }
 
       case 'explain':
         if (args.length === 0) {
@@ -369,7 +403,7 @@ ${JSON.stringify(explanation, null, 2)}`
           );
         }
 
-      case 'check':
+      case 'check': {
         if (args.length === 0) {
           return formatOutput('payment-agent-01', 'check', 'Error: Please specify amount.\nUsage: check <amount>');
         }
@@ -398,6 +432,7 @@ ${result.results.map(r => `  ${r.guard}: ${r.passed ? 'PASS' : 'FAIL'}${r.reason
             `Error: ${error instanceof Error ? error.message : 'Failed to evaluate guards'}`
           );
         }
+      }
 
       case 'networks':
         try {
@@ -484,28 +519,21 @@ ${result.results.map(r => `  ${r.guard}: ${r.passed ? 'PASS' : 'FAIL'}${r.reason
   return (
     <div
       className={cn(
-        'flex flex-col h-full bg-[hsl(var(--card))] border border-border rounded-lg overflow-hidden',
+        'flex flex-col h-full bg-[hsl(var(--card))] border border-border/50 rounded-xl overflow-hidden',
         'font-mono text-sm',
         className
       )}
       style={{ height: '100%', maxHeight: '100%', display: 'flex', flexDirection: 'column' }}
     >
-      {/* Terminal Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-[hsl(var(--muted))]/30 shrink-0 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="flex gap-1.5">
-            <div className="w-3 h-3 rounded-full bg-destructive/60" />
-            <div className="w-3 h-3 rounded-full bg-warning/60" />
-            <div className="w-3 h-3 rounded-full bg-success/60" />
-          </div>
-          <span className="text-xs font-medium text-foreground ml-2">Execution Console (Controlled)</span>
-        </div>
+      {/* Terminal Header - Stripe-style */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 bg-background shrink-0">
+        <span className="text-xs font-medium text-foreground">Execution Console</span>
         <span className="text-xs text-muted-foreground">v1.0.0</span>
       </div>
 
-      {/* Logs Area - Scrollable */}
+      {/* Logs Area - Stripe logs style */}
       <div 
-        className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-1 bg-[hsl(var(--background))] min-h-0 relative terminal-scroll"
+        className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-0 bg-[hsl(var(--background))] min-h-0 relative terminal-scroll"
         style={{ 
           scrollbarWidth: 'thin',
           scrollbarColor: 'hsl(var(--border)) hsl(var(--muted))',
@@ -515,50 +543,78 @@ ${result.results.map(r => `  ${r.guard}: ${r.passed ? 'PASS' : 'FAIL'}${r.reason
           overflowX: 'hidden'
         }}
       >
-        {logs.map((log) => (
-          <div key={log.id} className="flex gap-2">
-            <span className="text-muted-foreground/60 shrink-0 text-xs">
+        {logs.map((log, idx) => (
+          <div key={log.id} className={cn(
+            'flex gap-3 py-1.5 border-b border-border/30 last:border-0',
+            idx === 0 && 'border-t-0'
+          )}>
+            <span className="text-muted-foreground/50 shrink-0 text-xs font-mono tabular-nums">
               [{formatTimestamp(log.timestamp)}]
             </span>
             <div className="flex-1 min-w-0">
               {log.type === 'command' && (
-                <span className="text-foreground font-medium">{log.content}</span>
+                <span className="text-foreground font-medium font-mono text-xs">{log.content}</span>
               )}
               {log.type === 'output' && (
-                <div className="text-foreground/90 whitespace-pre-wrap break-words font-mono text-xs">
-                  {log.content.split('\n').map((line, idx, arr) => (
-                    <span key={idx}>
-                      {line.startsWith('Agent:') ? (
-                        <span className="text-green-500">{line}</span>
-                      ) : (
-                        line
-                      )}
-                      {idx < arr.length - 1 && '\n'}
-                    </span>
-                  ))}
+                <div className="text-foreground/80 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
+                  {log.content.split('\n').map((line, lineIdx, arr) => {
+                    // Format tool call headers (with checkmark)
+                    if (line.includes('✓') && line.includes('[') && line.includes(']')) {
+                      return (
+                        <span key={lineIdx} className="text-[hsl(var(--success))] font-semibold">
+                          {line}
+                          {lineIdx < arr.length - 1 && '\n'}
+                        </span>
+                      );
+                    }
+                    // Format execution steps like Stripe logs
+                    if (line.includes('EXECUTION') || line.includes('TOOL_CALL')) {
+                      const parts = line.split('→');
+                      if (parts.length === 2) {
+                        return (
+                          <span key={lineIdx}>
+                            <span className="font-semibold text-foreground">{parts[0].trim()}</span>
+                            <span className="text-muted-foreground"> → </span>
+                            <span className="text-foreground">{parts[1].trim()}</span>
+                            {lineIdx < arr.length - 1 && '\n'}
+                          </span>
+                        );
+                      }
+                    }
+                    return (
+                      <span key={lineIdx}>
+                        {line.startsWith('Agent:') ? (
+                          <span className="text-[hsl(var(--success))]">{line}</span>
+                        ) : (
+                          line
+                        )}
+                        {lineIdx < arr.length - 1 && '\n'}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
               {log.type === 'error' && (
-                <span className="text-destructive">{log.content}</span>
+                <span className="text-[hsl(var(--destructive))] font-mono text-xs">{log.content}</span>
               )}
             </div>
           </div>
         ))}
         {isProcessing && (
-          <div className="flex gap-2">
-            <span className="text-muted-foreground/60 shrink-0 text-xs">
+          <div className="flex gap-3 py-1.5 border-b border-border/30">
+            <span className="text-muted-foreground/50 shrink-0 text-xs font-mono tabular-nums">
               [{formatTimestamp(new Date())}]
             </span>
-            <span className="text-muted-foreground">Processing...</span>
+            <span className="text-muted-foreground font-mono text-xs">Processing...</span>
           </div>
         )}
         <div ref={logsEndRef} />
       </div>
 
-      {/* Input Area */}
-      <form onSubmit={handleSubmit} className="border-t border-border bg-[hsl(var(--card))] shrink-0">
+      {/* Input Area - Stripe-style */}
+      <form onSubmit={handleSubmit} className="border-t border-border/50 bg-background shrink-0">
         <div className="flex items-center gap-2 px-4 py-3">
-          <span className="text-muted-foreground shrink-0">$</span>
+          <span className="text-muted-foreground/60 shrink-0 font-mono text-xs">$</span>
           <input
             ref={inputRef}
             type="text"
@@ -567,7 +623,7 @@ ${result.results.map(r => `  ${r.guard}: ${r.passed ? 'PASS' : 'FAIL'}${r.reason
             onKeyDown={handleKeyDown}
             disabled={isProcessing}
             placeholder={isProcessing ? 'Processing...' : 'Enter an agent instruction or tool command'}
-            className="flex-1 bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground/50 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground/50 disabled:opacity-50 disabled:cursor-not-allowed font-mono text-xs"
             autoComplete="off"
             spellCheck="false"
           />

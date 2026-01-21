@@ -41,6 +41,43 @@ export default function PaymentIntentsPage() {
     loadIntents();
   }, []);
 
+  // Auto-refresh polling: Check for status updates every 5 seconds
+  // Only poll if there are pending intents to avoid unnecessary requests
+  useEffect(() => {
+    const hasPendingIntents = intents.some(
+      intent => intent.status === 'pending' || 
+                intent.status === 'executing' || 
+                intent.status === 'awaiting_approval' ||
+                intent.status === 'approved' ||
+                intent.status === 'requires_approval'
+    );
+
+    if (!hasPendingIntents) {
+      return; // No pending intents, no need to poll
+    }
+
+    const pollInterval = setInterval(() => {
+      // Silently refresh intents without showing loading state
+      paymentsService.getIntents()
+        .then(data => {
+          setIntents(prevIntents => {
+            // Only update if statuses have changed to avoid unnecessary re-renders
+            const hasChanges = data.some(newIntent => {
+              const oldIntent = prevIntents.find(i => i.id === newIntent.id);
+              return !oldIntent || oldIntent.status !== newIntent.status || oldIntent.updatedAt !== newIntent.updatedAt;
+            });
+            return hasChanges ? data : prevIntents;
+          });
+        })
+        .catch(err => {
+          // Silently fail - don't show errors for background polling
+          console.debug('Background poll failed:', err);
+        });
+    }, 5000); // Poll every 5 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [intents]);
+
   const loadIntents = async () => {
     setLoading(true);
     setError(null);
@@ -161,54 +198,57 @@ export default function PaymentIntentsPage() {
           } : undefined}
         />
       ) : filteredIntents.length > 0 ? (
-        <div className="border rounded-lg overflow-hidden">
+        <div className="border border-border/50 rounded-xl overflow-hidden">
           <div className="table-wrapper">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead className="min-w-[200px]">Intent</TableHead>
-                  <TableHead className="min-w-[180px]">Recipient</TableHead>
-                  <TableHead className="min-w-[120px]">Amount</TableHead>
-                  <TableHead className="min-w-[100px]">Status</TableHead>
-                  <TableHead className="min-w-[120px]">Created</TableHead>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="min-w-[200px] text-xs font-semibold text-muted-foreground uppercase tracking-wider">Intent</TableHead>
+                  <TableHead className="min-w-[180px] text-xs font-semibold text-muted-foreground uppercase tracking-wider">Recipient</TableHead>
+                  <TableHead className="min-w-[120px] text-xs font-semibold text-muted-foreground uppercase tracking-wider">Amount</TableHead>
+                  <TableHead className="min-w-[100px] text-xs font-semibold text-muted-foreground uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="min-w-[120px] text-xs font-semibold text-muted-foreground uppercase tracking-wider">Created</TableHead>
                   <TableHead className="w-10"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredIntents.map((intent) => (
-                  <TableRow key={intent.id} className="touch-manipulation">
-                    <TableCell>
+                  <TableRow 
+                    key={intent.id} 
+                    className="touch-manipulation hover:bg-muted/30 transition-colors cursor-pointer border-b border-border/30"
+                  >
+                    <TableCell className="py-4">
                       <div>
                         <code className="text-xs font-mono text-muted-foreground break-all">
                           {intent.id}
                         </code>
-                        <p className="text-sm mt-0.5 break-words">{intent.description}</p>
+                        <p className="text-sm mt-1 break-words font-medium">{intent.description}</p>
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="py-4">
                       <div>
                         <p className="font-medium text-sm break-words">{intent.recipient}</p>
-                        <p className="text-xs text-muted-foreground font-mono break-all">
+                        <p className="text-xs text-muted-foreground font-mono break-all mt-0.5">
                           {intent.recipientAddress}
                         </p>
                       </div>
                     </TableCell>
-                    <TableCell>
-                      <span className="font-medium whitespace-nowrap">
+                    <TableCell className="py-4">
+                      <span className="font-semibold whitespace-nowrap text-sm">
                         ${intent.amount.toLocaleString()} {intent.currency}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="py-4">
                       <StatusChip status={intent.status} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="py-4">
                       <span className="text-sm text-muted-foreground whitespace-nowrap">
                         {formatDistanceToNow(new Date(intent.createdAt), { addSuffix: true })}
                       </span>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="py-4">
                       <Link to={`/app/intents/${intent.id}`}>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 touch-manipulation">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 touch-manipulation hover:bg-muted/50">
                           <ExternalLink className="h-4 w-4" />
                         </Button>
                       </Link>

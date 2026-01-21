@@ -27,7 +27,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { Search, Filter, Download, ExternalLink, FileText } from 'lucide-react';
+import { Search, Filter, Download, ExternalLink, FileText, RefreshCw } from 'lucide-react';
 import { paymentsService } from '@/services/payments';
 import type { Transaction } from '@/types';
 import { formatDistanceToNow, format } from 'date-fns';
@@ -47,6 +47,23 @@ const TransactionRow = React.memo(({ tx, onSelect }: { tx: Transaction; onSelect
     () => `$${tx.amount.toLocaleString()} ${tx.currency}`,
     [tx.amount, tx.currency]
   );
+
+  // Generate explorer URL from txHash
+  const explorerUrl = useMemo(() => {
+    if (!tx.txHash) return null;
+    // Use metadata explorerUrl if available, otherwise generate from txHash
+    const metadataUrl = tx.metadata?.explorerUrl as string | undefined;
+    if (metadataUrl) return metadataUrl;
+    // Generate URL: https://testnet.arcscan.app/tx/{txHash}
+    return `https://testnet.arcscan.app/tx/${tx.txHash}`;
+  }, [tx.txHash, tx.metadata]);
+
+  const handleExplorerClick = (e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent row click
+    if (explorerUrl) {
+      window.open(explorerUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
 
   return (
     <TableRow
@@ -82,9 +99,21 @@ const TransactionRow = React.memo(({ tx, onSelect }: { tx: Transaction; onSelect
         </span>
       </TableCell>
       <TableCell>
-        <Button variant="ghost" size="icon" className="h-8 w-8 touch-manipulation">
-          <ExternalLink className="h-4 w-4" />
-        </Button>
+        {explorerUrl ? (
+          <Button 
+            variant="ghost" 
+            size="icon" 
+            className="h-8 w-8 touch-manipulation"
+            onClick={handleExplorerClick}
+            title="View on ArcScan Explorer"
+          >
+            <ExternalLink className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button variant="ghost" size="icon" className="h-8 w-8 touch-manipulation" disabled>
+            <ExternalLink className="h-4 w-4 opacity-50" />
+          </Button>
+        )}
       </TableCell>
     </TableRow>
   );
@@ -100,7 +129,7 @@ export default function TransactionsPage() {
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
 
   // Use React Query for data fetching with caching
-  const { data: transactions = [], isLoading } = useTransactions();
+  const { data: transactions = [], isLoading, error, refetch } = useTransactions();
 
   // Memoize filtered transactions to avoid recalculating on every render
   const filteredTransactions = useMemo(() => {
@@ -142,16 +171,43 @@ export default function TransactionsPage() {
     );
   }
 
+  if (error) {
+    return (
+      <div>
+        <PageHeader title="Transactions" />
+        <EmptyState
+          title="Failed to load transactions"
+          description={error instanceof Error ? error.message : 'An error occurred while loading transactions'}
+          variant="error"
+          action={{
+            label: 'Try Again',
+            onClick: () => refetch(),
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader
         title="Transactions"
         description="View and export your transaction history"
         actions={
-          <Button variant="outline" onClick={handleExportCsv}>
-            <Download className="h-4 w-4 mr-2" />
-            Export CSV
-          </Button>
+          <>
+            <Button 
+              variant="outline" 
+              onClick={() => refetch()}
+              disabled={isLoading}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Button variant="outline" onClick={handleExportCsv}>
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </Button>
+          </>
         }
       />
 
@@ -181,13 +237,17 @@ export default function TransactionsPage() {
       </div>
 
       {/* Table */}
-      {filteredTransactions.length === 0 ? (
+      {filteredTransactions.length === 0 && !isLoading ? (
         <EmptyState
           title="No transactions found"
-          description="Transactions will appear here once you start making payments"
+          description="Transactions will appear here once you start making payments. Click Refresh to check for new transactions."
           variant="search"
+          action={{
+            label: 'Refresh',
+            onClick: () => refetch(),
+          }}
         />
-      ) : (
+      ) : filteredTransactions.length > 0 ? (
         <div className="border rounded-lg overflow-hidden">
           <div className="table-wrapper">
             <Table>
@@ -210,7 +270,7 @@ export default function TransactionsPage() {
             </Table>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Transaction Detail Drawer */}
       <Sheet open={!!selectedTx} onOpenChange={() => setSelectedTx(null)}>
@@ -287,9 +347,22 @@ export default function TransactionsPage() {
                         {selectedTx.txHash}
                       </code>
                       <CopyButton value={selectedTx.txHash} />
-                      <Button variant="ghost" size="icon" className="h-6 w-6">
-                        <ExternalLink className="h-3 w-3" />
-                      </Button>
+                      {(() => {
+                        // Generate explorer URL from txHash
+                        const explorerUrl = selectedTx.metadata?.explorerUrl as string | undefined || 
+                          `https://testnet.arcscan.app/tx/${selectedTx.txHash}`;
+                        return (
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="h-6 w-6"
+                            onClick={() => window.open(explorerUrl, '_blank', 'noopener,noreferrer')}
+                            title="View on ArcScan Explorer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </Button>
+                        );
+                      })()}
                     </div>
                   </div>
                 )}

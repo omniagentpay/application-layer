@@ -145,7 +145,7 @@ walletsRouter.get('/agent/balance', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    let { data: user, error: userError } = await supabase
+    const { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
@@ -256,18 +256,28 @@ walletsRouter.get('/agent/balance', async (req, res) => {
       const walletsWithBalances = await Promise.all(
         agentWallets.map(async (wallet) => {
           try {
-            const balanceResult = await callMcp('check_balance', { wallet_id: wallet.circle_wallet_id }) as any;
+            // Use shorter timeout and fewer retries for balance checks during deduplication
+            const balanceResult = await callMcp('check_balance', { wallet_id: wallet.circle_wallet_id }, undefined, { maxRetries: 1, timeout: 5000 }) as any;
             const balance = balanceResult?.status === 'success' ? parseFloat(balanceResult.usdc_balance || '0') : 0;
-            return { ...wallet, balance };
+            return { ...wallet, balance, balanceError: null };
           } catch (error) {
-            console.error(`Failed to fetch balance for wallet ${wallet.circle_wallet_id}:`, error);
-            return { ...wallet, balance: 0 };
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            // Don't fail the entire operation if balance fetch fails - just mark it
+            console.warn(`[GET /api/wallets/agent/balance] Failed to fetch balance for wallet ${wallet.circle_wallet_id}:`, errorMessage);
+            // If it's a connection error, we'll use the most recent wallet as fallback
+            const isConnectionError = errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed') || errorMessage.includes('timeout');
+            return { ...wallet, balance: 0, balanceError: isConnectionError ? 'connection_error' : 'unknown_error' };
           }
         })
       );
       
       // Find wallet with 1 USDC (or closest to 1), otherwise use most recent
-      const walletWith1USDC = walletsWithBalances.find(w => Math.abs(w.balance - 1.0) < 0.01); // Allow small tolerance
+      // Prioritize wallets that successfully fetched balance over those with connection errors
+      const walletsWithSuccessfulBalance = walletsWithBalances.filter(w => w.balanceError === null);
+      const walletWith1USDC = walletsWithSuccessfulBalance.find(w => Math.abs(w.balance - 1.0) < 0.01) || 
+                              walletsWithSuccessfulBalance.find(w => w.balance > 0) ||
+                              walletsWithBalances[0]; // Fallback to most recent if all failed
+      
       const walletToKeep = walletWith1USDC || walletsWithBalances[0]; // Use 1 USDC wallet or most recent
       
       // Deactivate all other wallets
@@ -282,7 +292,7 @@ walletsRouter.get('/agent/balance', async (req, res) => {
           })
           .in('id', duplicateIds);
         
-        console.log(`[GET /api/wallets/agent/balance] Deactivated ${duplicateIds.length} duplicate wallets. Kept wallet ${walletToKeep.circle_wallet_id} with balance ${walletToKeep.balance} USDC`);
+        console.log(`[GET /api/wallets/agent/balance] Deactivated ${duplicateIds.length} duplicate wallets. Kept wallet ${walletToKeep.circle_wallet_id}${walletToKeep.balanceError ? ' (balance check failed, using most recent)' : ` with balance ${walletToKeep.balance} USDC`}`);
       }
       
       // Update agentWallets to only include the kept wallet
@@ -307,7 +317,8 @@ walletsRouter.get('/agent/balance', async (req, res) => {
       const { callMcp } = await import('../lib/mcp-client.js');
       console.log(`[GET /api/wallets/agent/balance] Fetching balance for wallet_id: ${agentWallet.circle_wallet_id}`);
       
-      const balanceResult = await callMcp('check_balance', { wallet_id: agentWallet.circle_wallet_id }) as any;
+      // Use retry logic with reasonable timeout for balance checks
+      const balanceResult = await callMcp('check_balance', { wallet_id: agentWallet.circle_wallet_id }, undefined, { maxRetries: 2, timeout: 10000 }) as any;
       console.log(`[GET /api/wallets/agent/balance] MCP response:`, JSON.stringify(balanceResult, null, 2));
 
       if (balanceResult?.status === 'success') {
@@ -321,8 +332,16 @@ walletsRouter.get('/agent/balance', async (req, res) => {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      balanceError = `Failed to fetch balance: ${errorMessage}`;
-      console.error(`[GET /api/wallets/agent/balance] Failed to fetch balance for wallet ${agentWallet.circle_wallet_id}:`, errorMessage, error);
+      // Check if it's a connection error
+      const isConnectionError = errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed') || errorMessage.includes('timeout') || errorMessage.includes('ECONNRESET');
+      
+      if (isConnectionError) {
+        balanceError = `Connection error: Unable to reach MCP server. Please ensure the MCP server is running.`;
+        console.error(`[GET /api/wallets/agent/balance] Connection error fetching balance for wallet ${agentWallet.circle_wallet_id}:`, errorMessage);
+      } else {
+        balanceError = `Failed to fetch balance: ${errorMessage}`;
+        console.error(`[GET /api/wallets/agent/balance] Failed to fetch balance for wallet ${agentWallet.circle_wallet_id}:`, errorMessage, error);
+      }
     }
 
     return res.json({
@@ -507,7 +526,7 @@ walletsRouter.get('/agent', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    let { data: user, error: userError } = await supabase
+    const { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
@@ -619,18 +638,28 @@ walletsRouter.get('/agent', async (req, res) => {
       const walletsWithBalances = await Promise.all(
         agentWallets.map(async (wallet) => {
           try {
-            const balanceResult = await callMcp('check_balance', { wallet_id: wallet.circle_wallet_id }) as any;
+            // Use shorter timeout and fewer retries for balance checks during deduplication
+            const balanceResult = await callMcp('check_balance', { wallet_id: wallet.circle_wallet_id }, undefined, { maxRetries: 1, timeout: 5000 }) as any;
             const balance = balanceResult?.status === 'success' ? parseFloat(balanceResult.usdc_balance || '0') : 0;
-            return { ...wallet, balance };
+            return { ...wallet, balance, balanceError: null };
           } catch (error) {
-            console.error(`Failed to fetch balance for wallet ${wallet.circle_wallet_id}:`, error);
-            return { ...wallet, balance: 0 };
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            // Don't fail the entire operation if balance fetch fails - just mark it
+            console.warn(`[GET /api/wallets/agent] Failed to fetch balance for wallet ${wallet.circle_wallet_id}:`, errorMessage);
+            // If it's a connection error, we'll use the most recent wallet as fallback
+            const isConnectionError = errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed') || errorMessage.includes('timeout');
+            return { ...wallet, balance: 0, balanceError: isConnectionError ? 'connection_error' : 'unknown_error' };
           }
         })
       );
       
       // Find wallet with 1 USDC (or closest to 1), otherwise use most recent
-      const walletWith1USDC = walletsWithBalances.find(w => Math.abs(w.balance - 1.0) < 0.01); // Allow small tolerance
+      // Prioritize wallets that successfully fetched balance over those with connection errors
+      const walletsWithSuccessfulBalance = walletsWithBalances.filter(w => w.balanceError === null);
+      const walletWith1USDC = walletsWithSuccessfulBalance.find(w => Math.abs(w.balance - 1.0) < 0.01) || 
+                              walletsWithSuccessfulBalance.find(w => w.balance > 0) ||
+                              walletsWithBalances[0]; // Fallback to most recent if all failed
+      
       const walletToKeep = walletWith1USDC || walletsWithBalances[0]; // Use 1 USDC wallet or most recent
       
       // Deactivate all other wallets
@@ -645,7 +674,7 @@ walletsRouter.get('/agent', async (req, res) => {
           })
           .in('id', duplicateIds);
         
-        console.log(`[GET /api/wallets/agent] Deactivated ${duplicateIds.length} duplicate wallets. Kept wallet ${walletToKeep.circle_wallet_id} with balance ${walletToKeep.balance} USDC`);
+        console.log(`[GET /api/wallets/agent] Deactivated ${duplicateIds.length} duplicate wallets. Kept wallet ${walletToKeep.circle_wallet_id}${walletToKeep.balanceError ? ' (balance check failed, using most recent)' : ` with balance ${walletToKeep.balance} USDC`}`);
       }
       
       // Update agentWallets to only include the kept wallet
@@ -733,7 +762,7 @@ walletsRouter.post('/agent/create', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    let { data: user, error: userError } = await supabase
+    const { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)
@@ -847,18 +876,28 @@ walletsRouter.post('/agent/create', async (req, res) => {
         const walletsWithBalances = await Promise.all(
           existingWallets.map(async (wallet) => {
             try {
-              const balanceResult = await callMcp('check_balance', { wallet_id: wallet.circle_wallet_id }) as any;
+              // Use shorter timeout and fewer retries for balance checks during deduplication
+              const balanceResult = await callMcp('check_balance', { wallet_id: wallet.circle_wallet_id }, undefined, { maxRetries: 1, timeout: 5000 }) as any;
               const balance = balanceResult?.status === 'success' ? parseFloat(balanceResult.usdc_balance || '0') : 0;
-              return { ...wallet, balance };
+              return { ...wallet, balance, balanceError: null };
             } catch (error) {
-              console.error(`Failed to fetch balance for wallet ${wallet.circle_wallet_id}:`, error);
-              return { ...wallet, balance: 0 };
+              const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+              // Don't fail the entire operation if balance fetch fails - just mark it
+              console.warn(`[POST /api/wallets/agent/create] Failed to fetch balance for wallet ${wallet.circle_wallet_id}:`, errorMessage);
+              // If it's a connection error, we'll use the most recent wallet as fallback
+              const isConnectionError = errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed') || errorMessage.includes('timeout');
+              return { ...wallet, balance: 0, balanceError: isConnectionError ? 'connection_error' : 'unknown_error' };
             }
           })
         );
         
         // Find wallet with 1 USDC (or closest to 1), otherwise use most recent
-        const walletWith1USDC = walletsWithBalances.find(w => Math.abs(w.balance - 1.0) < 0.01); // Allow small tolerance
+        // Prioritize wallets that successfully fetched balance over those with connection errors
+        const walletsWithSuccessfulBalance = walletsWithBalances.filter(w => w.balanceError === null);
+        const walletWith1USDC = walletsWithSuccessfulBalance.find(w => Math.abs(w.balance - 1.0) < 0.01) || 
+                                walletsWithSuccessfulBalance.find(w => w.balance > 0) ||
+                                walletsWithBalances[0]; // Fallback to most recent if all failed
+        
         const walletToKeep = walletWith1USDC || walletsWithBalances[0]; // Use 1 USDC wallet or most recent
         
         // Deactivate all other wallets
@@ -873,7 +912,7 @@ walletsRouter.post('/agent/create', async (req, res) => {
             })
             .in('id', duplicateIds);
           
-          console.log(`[POST /api/wallets/agent/create] Deactivated ${duplicateIds.length} duplicate wallets. Kept wallet ${walletToKeep.circle_wallet_id} with balance ${walletToKeep.balance} USDC`);
+          console.log(`[POST /api/wallets/agent/create] Deactivated ${duplicateIds.length} duplicate wallets. Kept wallet ${walletToKeep.circle_wallet_id}${walletToKeep.balanceError ? ' (balance check failed, using most recent)' : ` with balance ${walletToKeep.balance} USDC`}`);
         }
         
         // Update existingWallets to only include the kept wallet
@@ -1003,7 +1042,7 @@ walletsRouter.post('/agent/reset', async (req, res) => {
     }
 
     // Get user by Privy ID, or create if doesn't exist
-    let { data: user, error: userError } = await supabase
+    const { data: user, error: userError } = await supabase
       .from('users')
       .select('id')
       .eq('privy_user_id', privyUserId)

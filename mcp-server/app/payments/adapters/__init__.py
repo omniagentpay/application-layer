@@ -255,15 +255,18 @@ class X402Adapter:
             intent_hash = self._compute_intent_hash(signed_intent)
             
             # 5. Build explorer URL (Arc Testnet)
-            tx_hash = execution_result.get('transfer_id', '')
-            explorer_url = f"https://testnet.arcscan.app/tx/{tx_hash}"
+            # Use tx_hash (blockchain hash) not transfer_id (Circle internal UUID)
+            tx_hash = execution_result.get('tx_hash') or execution_result.get('blockchain_tx') or ''
+            # Only generate explorer URL for valid blockchain hashes (0x... or 64-char hex)
+            is_valid_blockchain_hash = tx_hash and (tx_hash.startswith('0x') or len(tx_hash) == 64 and all(c in '0123456789abcdefABCDEF' for c in tx_hash))
+            explorer_url = f"https://testnet.arcscan.app/tx/{tx_hash}" if is_valid_blockchain_hash else None
             
             # 6. Return structured receipt
             receipt = {
                 "status": "success",
                 "intentId": intent_id,
                 "intentHash": intent_hash,
-                "txHash": tx_hash,
+                "txHash": tx_hash or execution_result.get('transfer_id', ''),  # Fallback to transfer_id if no tx_hash
                 "explorerUrl": explorer_url,
                 "amount": amount,
                 "currency": currency,

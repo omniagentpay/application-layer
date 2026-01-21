@@ -128,9 +128,11 @@ export async function executePayment(intentId: string, intentData?: {
 
         // Generate explorer URL if we have a valid blockchain tx hash (starts with 0x)
         // Don't generate for UUIDs (transfer_ids) - those are Circle internal IDs
-        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx/';
+        const explorerBase = process.env.ARC_EXPLORER_TX_BASE || 'https://testnet.arcscan.app/tx';
         const isValidBlockchainHash = txHash && (txHash.startsWith('0x') || txHash.match(/^[0-9a-fA-F]{64}$/));
-        const explorerUrl = isValidBlockchainHash ? `${explorerBase}${txHash}` : undefined;
+        // Normalize base URL: ensure format is https://testnet.arcscan.app/tx (without trailing slash)
+        const normalizedBase = explorerBase.replace(/\/tx\/?$/, '/tx');
+        const explorerUrl = isValidBlockchainHash ? `${normalizedBase}/${txHash}` : undefined;
 
         console.log('[executePayment] Parsed result:', { txHash, circleTransferId, explorerUrl, isValidBlockchainHash });
 
@@ -210,18 +212,49 @@ export async function estimateCrossChainRoute(params: {
 }): Promise<RouteEstimate> {
   // Replace with actual SDK call: return await sdk.estimateRoute(params);
   const cctpSupported = ['ethereum', 'polygon', 'arbitrum', 'optimism', 'base', 'avalanche'];
-  const route = params.preferredRoute === 'auto' || !params.preferredRoute
-    ? (cctpSupported.includes(params.sourceChain) && cctpSupported.includes(params.destChain) ? 'cctp' : 'gateway')
-    : params.preferredRoute as 'cctp' | 'gateway' | 'bridge_kit';
+  const sourceLower = params.sourceChain.toLowerCase();
+  const destLower = params.destChain.toLowerCase();
+  
+  let route: 'cctp' | 'gateway' | 'bridge_kit';
+  let explanation: string;
+  let eta: string;
+  let fee: number;
+  let steps: string[];
+  
+  if (params.preferredRoute === 'bridge_kit') {
+    route = 'bridge_kit';
+    explanation = 'Bridge Kit selected, but not yet implemented. Please use CCTP or Gateway.';
+    eta = 'N/A';
+    fee = params.amount * 0.003; // Higher fee estimate
+    steps = ['Bridge Kit integration pending'];
+  } else if (params.preferredRoute === 'cctp' || params.preferredRoute === 'gateway') {
+    route = params.preferredRoute as 'cctp' | 'gateway';
+    explanation = `Route selected: ${route}`;
+    eta = route === 'cctp' ? '~15 minutes' : '~30 minutes';
+    fee = params.amount * (route === 'cctp' ? 0.001 : 0.002);
+    steps = route === 'cctp'
+      ? ['Initiate burn on source chain', 'Wait for attestation', 'Mint on destination chain']
+      : ['Deposit to Gateway', 'Cross-chain verification', 'Release on destination'];
+  } else {
+    // Auto selection
+    const bothSupported = cctpSupported.includes(sourceLower) && cctpSupported.includes(destLower);
+    route = bothSupported ? 'cctp' : 'gateway';
+    explanation = bothSupported 
+      ? 'Auto-selected CCTP (both chains supported)'
+      : `Auto-selected Gateway (CCTP not available for ${params.sourceChain} -> ${params.destChain})`;
+    eta = route === 'cctp' ? '~15 minutes' : '~30 minutes';
+    fee = params.amount * (route === 'cctp' ? 0.001 : 0.002);
+    steps = route === 'cctp'
+      ? ['Initiate burn on source chain', 'Wait for attestation', 'Mint on destination chain']
+      : ['Deposit to Gateway', 'Cross-chain verification', 'Release on destination'];
+  }
 
   return {
     route,
-    explanation: `Route selected: ${route}`,
-    eta: route === 'cctp' ? '~15 minutes' : '~30 minutes',
-    fee: params.amount * (route === 'cctp' ? 0.001 : 0.002),
-    steps: route === 'cctp'
-      ? ['Initiate burn on source chain', 'Wait for attestation', 'Mint on destination chain']
-      : ['Deposit to Gateway', 'Cross-chain verification', 'Release on destination'],
+    explanation,
+    eta,
+    fee,
+    steps,
   };
 }
 
@@ -246,10 +279,10 @@ export async function generateReceiptSummary(tx: {
   amount: number;
   recipient?: string;
   type: string;
-  chain: string;
+  chain?: string;
   txHash?: string;
 }): Promise<string> {
   // Replace with actual LLM call or SDK function
   // This could use OpenAI, Anthropic, or a provided SDK function
-  return `Payment of $${tx.amount} USDC ${tx.recipient ? `to ${tx.recipient}` : ''} on ${tx.chain}${tx.txHash ? ` (${tx.txHash.slice(0, 10)}...)` : ''}`;
+  return `Payment of $${tx.amount} USDC ${tx.recipient ? `to ${tx.recipient}` : ''} on ${tx.chain || 'unknown chain'}${tx.txHash ? ` (${tx.txHash.slice(0, 10)}...)` : ''}`;
 }

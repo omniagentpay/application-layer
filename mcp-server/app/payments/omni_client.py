@@ -124,13 +124,25 @@ class OmniAgentPaymentClient(AbstractPaymentClient):
         from_wallet_id: str, 
         to_address: str, 
         amount: str, 
-        currency: str = "USD"
+        currency: str = "USD",
+        destination_chain: Optional[str] = None
     ) -> Dict[str, Any]:
+        # Convert destination_chain string to Network enum if provided
+        destination_chain_param = None
+        if destination_chain:
+            try:
+                from omniagentpay.core.types import Network
+                destination_chain_param = Network.from_string(destination_chain)
+            except Exception:
+                # If conversion fails, pass as string and let SDK handle it
+                destination_chain_param = destination_chain
+        
         result = await self._client.simulate(
             wallet_id=from_wallet_id,
             recipient=to_address,
             amount=amount,
-            currency=currency
+            currency=currency,
+            destination_chain=destination_chain_param
         )
         # Fix: Use correct attributes for SimulationResult
         return {
@@ -145,14 +157,26 @@ class OmniAgentPaymentClient(AbstractPaymentClient):
         from_wallet_id: str, 
         to_address: str, 
         amount: str, 
-        currency: str = "USD"
+        currency: str = "USD",
+        destination_chain: Optional[str] = None
     ) -> Dict[str, Any]:
+        # Convert destination_chain string to Network enum if provided
+        destination_chain_param = None
+        if destination_chain:
+            try:
+                from omniagentpay.core.types import Network
+                destination_chain_param = Network.from_string(destination_chain)
+            except Exception:
+                # If conversion fails, pass as string and let SDK handle it
+                destination_chain_param = destination_chain
+        
         # Execute payment with wait_for_completion to get blockchain tx_hash
         result = await self._client.pay(
             wallet_id=from_wallet_id,
             recipient=to_address,
             amount=amount,
             currency=currency,
+            destination_chain=destination_chain_param,
             wait_for_completion=True,  # CRITICAL: Wait for on-chain confirmation
             timeout_seconds=120,  # Wait up to 2 minutes for blockchain confirmation
         )

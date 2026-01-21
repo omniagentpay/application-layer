@@ -32,7 +32,7 @@ import { useDashboardData } from '@/hooks/useDashboard';
 
 export default function DashboardPage() {
   const { user, authenticated } = usePrivy();
-  const { data, isLoading } = useDashboardData(user, authenticated);
+  const { data, isLoading, error, refetch } = useDashboardData(user, authenticated);
 
   // Memoize all computed values to avoid recalculating on every render
   const pendingIntents = useMemo(() => {
@@ -224,6 +224,28 @@ export default function DashboardPage() {
     );
   }
 
+  if (error) {
+    return (
+      <div>
+        <PageHeader title="Dashboard" description="Overview of your payment operations" />
+        <Card className="mt-6">
+          <CardContent className="pt-6">
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <AlertCircle className="h-12 w-12 text-destructive mb-4" />
+              <h3 className="text-lg font-semibold mb-2">Failed to load dashboard data</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                {error instanceof Error ? error.message : 'An unexpected error occurred'}
+              </p>
+              <Button onClick={() => refetch()} variant="outline">
+                Try Again
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const hasExecutions = metrics.totalTransactions > 0;
   const hasWallets = metrics.activeWallets > 0;
 
@@ -237,60 +259,46 @@ export default function DashboardPage() {
       {/* Hero Status Banner */}
       <AgentStatusBanner agentsRequiringAttention={agentsRequiringAttention} />
 
-      {/* Metrics Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-6">
-        <MetricCard
-          label="Spend Today"
-          value={`$${metrics.spendToday.toLocaleString()}`}
-          icon={DollarSign}
-          bottomContent={<SpendTrendChart data={spendTrendData} />}
-        />
-        <MetricCard
-          label="Remaining Budget"
-          value={`$${metrics.remainingBudget.toLocaleString()}`}
-          subValue={(() => {
-            const usedPercent = (metrics.spendToday / 3000) * 100;
-            const thresholdPercent = (2400 / 3000) * 100;
-            const isWithinSafeLimits = usedPercent < thresholdPercent;
-            return `Daily limit${isWithinSafeLimits ? ' • Within safe limits' : ''}`;
-          })()}
-          chart={
-            <BudgetHealthRadial
-              used={metrics.spendToday}
-              remaining={metrics.remainingBudget}
-              threshold={2400}
-              total={3000}
-            />
-          }
-        />
-        <MetricCard
-          label="Success Rate"
-          value={hasExecutions ? `${metrics.successRate}%` : '—'}
-          subValue={hasExecutions ? undefined : 'No executions yet • System is idle and within limits'}
-          chart={
-            <SuccessRateDonut
-              successRate={metrics.successRate}
-              totalExecutions={metrics.totalTransactions}
-            />
-          }
-        />
-        <MetricCard
-          label="Active Wallets"
-          value={hasWallets ? metrics.activeWallets : '—'}
-          subValue={hasWallets ? undefined : 'No wallets currently exposed'}
-          icon={Wallet}
-        />
+      {/* KPI Row - Stripe-style payment gateway */}
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8">
+        <div className="bg-card border border-border/50 rounded-xl p-6 hover:border-border transition-colors">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Total Balance</div>
+          <div className="text-3xl font-semibold tracking-tight text-foreground mb-1">
+            ${metrics.remainingBudget.toLocaleString()}
+          </div>
+          <div className="text-xs text-muted-foreground">Daily limit</div>
+        </div>
+        <div className="bg-card border border-border/50 rounded-xl p-6 hover:border-border transition-colors">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Active Guards</div>
+          <div className="text-3xl font-semibold tracking-tight text-foreground mb-1">
+            {metrics.activeWallets || '—'}
+          </div>
+          <div className="text-xs text-muted-foreground">Wallets protected</div>
+        </div>
+        <div className="bg-card border border-border/50 rounded-xl p-6 hover:border-border transition-colors">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Payments Today</div>
+          <div className="text-3xl font-semibold tracking-tight text-foreground mb-1">
+            ${metrics.spendToday.toLocaleString()}
+          </div>
+          <div className="text-xs text-muted-foreground">24h volume</div>
+        </div>
+        <div className="bg-card border border-border/50 rounded-xl p-6 hover:border-border transition-colors">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">Success Rate</div>
+          <div className="text-3xl font-semibold tracking-tight text-foreground mb-1">
+            {hasExecutions ? `${metrics.successRate}%` : '—'}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {hasExecutions ? `${metrics.totalTransactions} transactions` : 'No executions yet'}
+          </div>
+        </div>
       </div>
 
       {/* Large Charts Section */}
       <div className="grid gap-6 mb-6">
         {/* Spend Trend Chart - Full Width */}
-        <Card>
-          <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-primary" />
-              <CardTitle className="text-lg font-semibold">Spend Trend (24 Hours)</CardTitle>
-            </div>
+        <Card className="border-border/50">
+          <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4">
+            <CardTitle className="text-base font-semibold">Spend Trend (24 Hours)</CardTitle>
           </CardHeader>
           <CardContent>
             <SpendTrendChart data={spendTrendData} showFullChart={true} />
@@ -299,24 +307,18 @@ export default function DashboardPage() {
 
         {/* Transaction Volume and Chain Distribution */}
         <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
-            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <BarChart3 className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg font-semibold">Transaction Volume</CardTitle>
-              </div>
+          <Card className="border-border/50">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base font-semibold">Transaction Volume</CardTitle>
             </CardHeader>
             <CardContent>
               <TransactionVolumeChart data={transactionVolumeData} />
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <PieChart className="h-5 w-5 text-primary" />
-                <CardTitle className="text-lg font-semibold">Chain Distribution</CardTitle>
-              </div>
+          <Card className="border-border/50">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base font-semibold">Chain Distribution</CardTitle>
             </CardHeader>
             <CardContent>
               <ChainDistributionChart data={chainDistributionData} />
@@ -326,9 +328,9 @@ export default function DashboardPage() {
 
         {/* Success Rate and Budget Health - Full Charts */}
         <div className="grid gap-6 lg:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold">Success Rate Breakdown</CardTitle>
+          <Card className="border-border/50">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base font-semibold">Success Rate Breakdown</CardTitle>
             </CardHeader>
             <CardContent>
               <SuccessRateDonut 
@@ -339,9 +341,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold">Budget Health</CardTitle>
+          <Card className="border-border/50">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base font-semibold">Budget Health</CardTitle>
             </CardHeader>
             <CardContent>
               <BudgetHealthRadial
@@ -358,11 +360,11 @@ export default function DashboardPage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Pending Approvals */}
-        <Card>
-            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-2">
+        <Card className="border-border/50">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4">
               <CardTitle className="text-base font-semibold">Pending Approvals</CardTitle>
               <Link to="/app/intents">
-                <Button variant="ghost" size="sm" className="text-xs touch-manipulation">
+                <Button variant="ghost" size="sm" className="text-xs touch-manipulation h-7">
                   View all <ArrowRight className="h-3 w-3 ml-1" />
                 </Button>
               </Link>
@@ -410,11 +412,11 @@ export default function DashboardPage() {
         </Card>
 
         {/* Recent Activity */}
-        <Card>
-            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-2">
+        <Card className="border-border/50">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4">
               <CardTitle className="text-base font-semibold">Recent Activity</CardTitle>
               <Link to="/app/transactions">
-                <Button variant="ghost" size="sm" className="text-xs touch-manipulation">
+                <Button variant="ghost" size="sm" className="text-xs touch-manipulation h-7">
                   View all <ArrowRight className="h-3 w-3 ml-1" />
                 </Button>
               </Link>

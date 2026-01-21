@@ -14,6 +14,7 @@ class PaymentRequest(BaseModel):
     to_address: str = Field(..., description="The recipient's blockchain address")
     amount: str = Field(..., description="Amount to send (e.g., '10.50')")
     currency: str = Field("USD", description="Currency code")
+    destination_chain: Optional[str] = Field(None, description="Destination blockchain network for cross-chain transfers (e.g., BASE, ETH, MATIC)")
 
     @validator("amount")
     def validate_amount(cls, v):
@@ -72,7 +73,8 @@ class PaymentOrchestrator:
             from_wallet_id=req.from_wallet_id,
             to_address=req.to_address,
             amount=req.amount,
-            currency=req.currency
+            currency=req.currency,
+            destination_chain=req.destination_chain
         )
 
         if simulation.get("status") != "success" or not simulation.get("validation_passed"):
@@ -85,7 +87,8 @@ class PaymentOrchestrator:
                 from_wallet_id=req.from_wallet_id,
                 to_address=req.to_address,
                 amount=req.amount,
-                currency=req.currency
+                currency=req.currency,
+                destination_chain=req.destination_chain
                 # In real SDK, we would pass idempotency_key here
             )
 

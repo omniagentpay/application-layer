@@ -11,7 +11,7 @@ const isDemoMode = () => process.env.OMNI_DEMO_MODE === 'true';
 // Parse invoice (PDF/image or text)
 invoiceRouter.post('/parse', async (req, res) => {
   const { fileBase64, text } = req.body;
-  
+
   if (!fileBase64 && !text) {
     return res.status(400).json({ error: 'Either fileBase64 or text is required' });
   }
@@ -30,21 +30,21 @@ invoiceRouter.post('/parse', async (req, res) => {
     if (isDemoMode()) {
       // Demo mode: deterministic parsing with regex + heuristics
       const invoiceText = text || 'Invoice from Acme Corp\nAmount: $1,234.56\nDue: 2024-01-15';
-      
+
       // Extract amount
       const amountMatch = invoiceText.match(/\$?([\d,]+\.?\d*)/g);
       const amounts = amountMatch?.map(m => parseFloat(m.replace(/[$,]/g, ''))) || [];
       const amount = amounts.length > 0 ? Math.max(...amounts) : 1234.56;
-      
+
       // Extract vendor name
       const vendorMatch = invoiceText.match(/(?:from|vendor|company|to):\s*([A-Za-z\s]+)/i) ||
-                         invoiceText.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/);
+        invoiceText.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/);
       const vendorName = vendorMatch ? vendorMatch[1].trim() : 'Acme Corporation';
-      
+
       // Extract currency
       const currencyMatch = invoiceText.match(/\b(USD|USDC|EUR|GBP)\b/i);
       const currency = currencyMatch ? currencyMatch[1].toUpperCase() : 'USDC';
-      
+
       parsedData = {
         vendorName,
         vendorId: `vendor_${vendorName.toLowerCase().replace(/\s+/g, '_')}`,
@@ -72,9 +72,9 @@ invoiceRouter.post('/parse', async (req, res) => {
           },
           body: JSON.stringify({ fileBase64, text }),
         });
-        
+
         if (response.ok) {
-          parsedData = await response.json();
+          parsedData = await response.json() as typeof parsedData;
         } else {
           // Fallback to demo mode if MCP fails
           throw new Error('MCP endpoint failed, using demo mode');
@@ -99,9 +99,9 @@ invoiceRouter.post('/parse', async (req, res) => {
     res.json(parsedData);
   } catch (error) {
     console.error('Invoice parse error:', error);
-    res.status(500).json({ 
-      error: 'Failed to parse invoice', 
-      details: error instanceof Error ? error.message : 'Unknown error' 
+    res.status(500).json({
+      error: 'Failed to parse invoice',
+      details: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
@@ -109,7 +109,7 @@ invoiceRouter.post('/parse', async (req, res) => {
 // Create intent from invoice
 invoiceRouter.post('/intents/create', async (req, res) => {
   const { amount, token, target, memo, source, extractedFields } = req.body;
-  
+
   if (!amount || !target) {
     return res.status(400).json({ error: 'Missing required fields: amount, target' });
   }
@@ -164,10 +164,10 @@ invoiceRouter.post('/intents/create', async (req, res) => {
   try {
     const guardResults = await checkGuards(intent);
     intent.guardResults = guardResults;
-    
+
     const needsApproval = requiresApproval(intent, guardResults);
     const allGuardsPassed = guardResults.every(r => r.passed);
-    
+
     if (!allGuardsPassed) {
       intent.status = 'blocked';
     } else if (needsApproval) {
@@ -181,7 +181,7 @@ invoiceRouter.post('/intents/create', async (req, res) => {
   }
 
   storage.savePaymentIntent(intent);
-  
+
   res.status(201).json({
     intentId: intent.id,
     status: intent.status,

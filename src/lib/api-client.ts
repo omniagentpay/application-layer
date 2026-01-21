@@ -46,8 +46,8 @@ class ApiClient {
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     
-    // Get Privy user ID if available
-    const privyUserId = await this.getPrivyUserId();
+    // Get Privy user ID if available (synchronous call)
+    const privyUserId = this.getPrivyUserId();
     
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
@@ -55,8 +55,8 @@ class ApiClient {
     };
     
     // Add Privy user ID header if available and not already set
-    if (privyUserId && !headers['X-Privy-User-Id']) {
-      headers['X-Privy-User-Id'] = privyUserId;
+    if (privyUserId && !(headers as any)['X-Privy-User-Id']) {
+      (headers as any)['X-Privy-User-Id'] = privyUserId;
     }
     
     const response = await fetch(url, {

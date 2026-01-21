@@ -156,7 +156,7 @@ x402Router.get('/', (req, res) => {
     res.json(apis);
   } catch (error) {
     console.error('[x402] Error getting all APIs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to load APIs',
       message: error instanceof Error ? error.message : 'Unknown error'
     });
@@ -168,18 +168,18 @@ x402Router.get('/search', (req, res) => {
   try {
     const query = (req.query.q as string)?.toLowerCase() || '';
     const apis = storage.getAllX402Apis();
-    
+
     const filtered = apis.filter(api =>
       api.name.toLowerCase().includes(query) ||
       api.description.toLowerCase().includes(query) ||
       api.category.toLowerCase().includes(query) ||
       api.tags.some(tag => tag.toLowerCase().includes(query))
     );
-    
+
     res.json(filtered);
   } catch (error) {
     console.error('[x402] Error searching APIs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to search APIs',
       message: error instanceof Error ? error.message : 'Unknown error'
     });
@@ -191,7 +191,7 @@ x402Router.get('/agent-wallet', (req, res) => {
   try {
     const agentWalletId = getAgentWalletId();
     if (!agentWalletId) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         error: 'Agent wallet not configured',
         message: 'AGENT_CIRCLE_WALLET_ID not set. Please configure the agent wallet first.',
       });
@@ -199,7 +199,7 @@ x402Router.get('/agent-wallet', (req, res) => {
     res.json({ walletId: agentWalletId });
   } catch (error) {
     console.error('[x402] Error getting agent wallet:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to get agent wallet',
       message: error instanceof Error ? error.message : 'Unknown error'
     });
@@ -216,7 +216,7 @@ x402Router.get('/:id', (req, res) => {
     res.json(api);
   } catch (error) {
     console.error('[x402] Error getting API:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to get API',
       message: error instanceof Error ? error.message : 'Unknown error'
     });
@@ -228,25 +228,25 @@ x402Router.get('/:id', (req, res) => {
 x402Router.post('/:id/call', async (req, res) => {
   const { walletId: providedWalletId } = req.body;
   const api = storage.getX402Api(req.params.id);
-  
+
   if (!api) {
     return res.status(404).json({ error: 'API not found' });
   }
-  
+
   const startTime = Date.now();
-  
+
   // Use provided wallet ID or fall back to agent wallet
   let walletId = providedWalletId;
   if (!walletId) {
     walletId = getAgentWalletId();
     if (!walletId) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'No wallet specified',
         message: 'Either provide walletId in request body or configure AGENT_CIRCLE_WALLET_ID',
       });
     }
   }
-  
+
   try {
     // Check if MCP server is configured
     const mcpServerUrl = process.env.MCP_SERVER_URL;
@@ -263,11 +263,11 @@ x402Router.post('/:id/call', async (req, res) => {
         latency: Date.now() - startTime,
       });
     }
-    
+
     console.log(`[x402] Agent attempting to call API: ${api.name} (${api.endpoint})`);
     console.log(`[x402] Using wallet: ${walletId}`);
     console.log(`[x402] Amount: ${api.price} ${api.currency}`);
-    
+
     // x402 Flow: Agent calls API → API returns 402 → Agent pays automatically → Retries API
     // The Python SDK's payment router automatically detects that api.endpoint is a URL
     // and routes it to the x402 adapter, which handles the HTTP 402 Payment Required protocol
@@ -276,12 +276,12 @@ x402Router.post('/:id/call', async (req, res) => {
       to_address: api.endpoint,  // URL triggers x402 adapter in Python SDK
       amount: api.price.toString(),
       currency: api.currency || 'USDC',
-    });
-    
+    }) as { status?: string; blockchain_tx?: string; transaction_id?: string };
+
     const latency = Date.now() - startTime;
-    
+
     console.log(`[x402] Payment executed successfully. Transaction: ${result.blockchain_tx || result.transaction_id || 'N/A'}`);
-    
+
     // Return result with x402 flow context
     res.json({
       data: {
@@ -307,9 +307,9 @@ x402Router.post('/:id/call', async (req, res) => {
   } catch (error) {
     const latency = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    
+
     console.error('[x402] API call failed:', errorMessage);
-    
+
     // Return error with context
     res.status(500).json({
       error: errorMessage,

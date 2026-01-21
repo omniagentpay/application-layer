@@ -15,10 +15,14 @@ export async function getTransactionsFromSupabase(
   }
 ): Promise<Transaction[]> {
   try {
+    // Convert UUID to string if needed (transactions.user_id might be UUID or TEXT)
+    const userIdStr = String(userId);
+    console.log('[getTransactionsFromSupabase] Fetching transactions for user:', { userId, userIdStr, filters });
+    
     let query = supabase
       .from('transactions')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', userIdStr)
       .order('created_at', { ascending: false });
 
     if (filters?.walletId) {
@@ -44,9 +48,22 @@ export async function getTransactionsFromSupabase(
     const { data, error } = await query;
 
     if (error) {
-      console.error('Error fetching transactions from Supabase:', error);
+      console.error('[getTransactionsFromSupabase] Supabase error:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+        userId,
+        filters,
+      });
       return [];
     }
+
+    console.log('[getTransactionsFromSupabase] Fetched transactions:', {
+      count: data?.length || 0,
+      userId,
+      transactions: data?.slice(0, 5).map(tx => ({ id: tx.id, status: tx.status, amount: tx.amount })),
+    });
 
     // Transform Supabase data to Transaction type
     return (data || []).map((tx: any) => ({
@@ -64,7 +81,12 @@ export async function getTransactionsFromSupabase(
       updatedAt: tx.updated_at || tx.created_at || new Date().toISOString(),
     }));
   } catch (error) {
-    console.error('Error in getTransactionsFromSupabase:', error);
+    console.error('[getTransactionsFromSupabase] Unexpected error:', {
+      error,
+      userId,
+      filters,
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
     return [];
   }
 }

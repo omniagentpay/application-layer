@@ -25,7 +25,7 @@ function isTransientError(error: unknown): boolean {
 
   const errorMessage = error.message.toLowerCase();
   const errorCode = (error as any).code;
-  
+
   // Check for connection reset, socket errors, and fetch failures
   return (
     errorMessage.includes('econnreset') ||
@@ -51,8 +51,8 @@ function sleep(ms: number): Promise<void> {
  * Call an MCP tool using JSON-RPC 2.0 protocol with retry logic
  */
 export async function callMcp(
-  method: string, 
-  params: Record<string, any>, 
+  method: string,
+  params: Record<string, any>,
   debugId?: string,
   options?: { maxRetries?: number; timeout?: number }
 ): Promise<unknown> {
@@ -100,7 +100,7 @@ export async function callMcp(
           throw new Error(`MCP call failed: ${response.status} ${errorText}`);
         }
 
-        const data: JsonRpcResponse = await response.json();
+        const data = await response.json() as JsonRpcResponse;
 
         if (data.error) {
           throw new Error(data.error.message || 'MCP error');
@@ -118,16 +118,16 @@ export async function callMcp(
         return data.result;
       } catch (fetchError) {
         clearTimeout(timeoutId);
-        
+
         if (fetchError instanceof Error && fetchError.name === 'AbortError') {
           throw new Error(`MCP call timed out after ${timeout}ms`);
         }
-        
+
         throw fetchError;
       }
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('Unknown error calling MCP');
-      
+
       // If it's not a transient error, or we've exhausted retries, throw immediately
       if (!isTransientError(error) || attempt === maxRetries) {
         throw lastError;
@@ -138,7 +138,7 @@ export async function callMcp(
       console.warn(
         `[MCP Client] Transient error on attempt ${attempt + 1}/${maxRetries + 1} for ${method}: ${lastError.message}. Retrying in ${delayMs}ms...`
       );
-      
+
       await sleep(delayMs);
     }
   }

@@ -205,34 +205,75 @@ export const storage = {
         explanation: intent.explanation,
       };
 
+      // Extract execution artifacts from metadata if available
+      const blockchainTxHash = intent.txHash || intent.metadata?.blockchainTxHash || intent.metadata?.blockchain_tx_hash;
+      const circleTransferId = intent.metadata?.circleTransferId || intent.metadata?.circle_transfer_id;
+      const circleTransactionId = intent.metadata?.circleTransactionId || intent.metadata?.circle_transaction_id;
+      const explorerUrl = intent.metadata?.explorerUrl || intent.metadata?.explorer_url;
+
       // Upsert to handle both creates and updates
+      const upsertData: any = {
+        id: intent.id,
+        user_id: userIdForDb,
+        amount: intent.amount,
+        currency: intent.currency,
+        recipient: intent.recipient,
+        recipient_address: intent.recipientAddress,
+        status: intent.status,
+        wallet_id: intent.walletId,
+        tx_hash: intent.txHash || blockchainTxHash,
+        chain: intent.chain,
+        route: intent.route,
+        steps: typeof intent.steps === 'string' ? intent.steps : JSON.stringify(intent.steps),
+        guard_results: typeof intent.guardResults === 'string' ? intent.guardResults : JSON.stringify(intent.guardResults || []),
+        metadata: enrichedMetadata,
+        created_at: intent.createdAt,
+        updated_at: intent.updatedAt,
+      };
+
+      // Add execution artifacts if available
+      if (blockchainTxHash) {
+        upsertData.blockchain_tx_hash = blockchainTxHash;
+      }
+      if (circleTransferId) {
+        upsertData.circle_transfer_id = circleTransferId;
+      }
+      if (circleTransactionId) {
+        upsertData.circle_transaction_id = circleTransactionId;
+      }
+      if (explorerUrl) {
+        upsertData.explorer_url = explorerUrl;
+      }
+      if (intent.status === 'succeeded' && blockchainTxHash && !upsertData.executed_at) {
+        upsertData.executed_at = intent.updatedAt;
+      }
+
       const { error: upsertError } = await supabase
         .from('payment_intents')
-        .upsert({
-          id: intent.id,
-          user_id: userIdForDb,
-          amount: intent.amount,
-          currency: intent.currency,
-          recipient: intent.recipient,
-          recipient_address: intent.recipientAddress,
-          status: intent.status,
-          wallet_id: intent.walletId,
-          tx_hash: intent.txHash,
-          chain: intent.chain,
-          route: intent.route,
-          steps: typeof intent.steps === 'string' ? intent.steps : JSON.stringify(intent.steps),
-          guard_results: typeof intent.guardResults === 'string' ? intent.guardResults : JSON.stringify(intent.guardResults || []),
-          metadata: enrichedMetadata,
-          created_at: intent.createdAt,
-          updated_at: intent.updatedAt,
-        });
+        .upsert(upsertData);
 
       if (upsertError) {
-        console.error('[Storage] Failed to upsert intent to Supabase:', upsertError);
+        console.error('[Storage] Failed to upsert intent to Supabase:', {
+          intentId: intent.id,
+          status: intent.status,
+          error: upsertError.message,
+          code: upsertError.code,
+          details: upsertError.details,
+          hint: upsertError.hint,
+        });
         throw upsertError;
+      } else {
+        console.log('[Storage] Successfully persisted intent to Supabase:', {
+          intentId: intent.id,
+          status: intent.status,
+          userId: userIdForDb,
+        });
       }
     } catch (error) {
-      console.error('[Storage] Error in persistIntentToSupabase:', error);
+      console.error('[Storage] Error in persistIntentToSupabase:', {
+        intentId: intent.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   },

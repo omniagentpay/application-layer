@@ -22,6 +22,8 @@ export default defineConfig({
     sourcemap: false, // Disable sourcemaps in production for faster builds
     minify: "esbuild", // Faster than terser
     cssMinify: true,
+    // Enable compression
+    reportCompressedSize: false, // Faster builds
     rollupOptions: {
       output: {
         manualChunks: {
@@ -38,6 +40,8 @@ export default defineConfig({
           "query-vendor": ["@tanstack/react-query"],
           "chart-vendor": ["recharts"],
           "form-vendor": ["react-hook-form", "@hookform/resolvers", "zod"],
+          // Separate heavy 3D libraries
+          "three-vendor": ["three", "@react-three/fiber", "@react-three/drei"],
         },
         // Optimize chunk file names
         chunkFileNames: "assets/js/[name]-[hash].js",
@@ -55,8 +59,10 @@ export default defineConfig({
       "react-dom",
       "react-router-dom",
       "@tanstack/react-query",
+      "@react-three/fiber", // Include to fix scheduler dependency resolution
+      "three", // Include for proper bundling
     ],
-    exclude: [],
+    // Don't exclude @react-three/fiber as it needs proper dependency resolution
   },
   // Enable experimental features for faster HMR
   experimental: {

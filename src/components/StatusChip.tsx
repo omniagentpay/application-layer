@@ -25,8 +25,35 @@ const statusConfig: Record<StatusType, { label: string; className: string }> = {
 export function StatusChip({ status, className }: StatusChipProps) {
   const config = statusConfig[status] || { label: status, className: 'status-blocked' };
   
+  // Stripe-style status pills
+  const getStatusStyles = (status: StatusType) => {
+    switch (status) {
+      case 'succeeded':
+      case 'completed':
+        return 'bg-[hsl(var(--success))]/12 text-[hsl(var(--success))]';
+      case 'pending':
+      case 'simulating':
+      case 'awaiting_approval':
+      case 'executing':
+      case 'bridging':
+      case 'confirming':
+        return 'bg-muted text-muted-foreground';
+      case 'failed':
+        return 'bg-[hsl(var(--destructive))]/12 text-[hsl(var(--destructive))]';
+      case 'blocked':
+      case 'inactive':
+        return 'bg-muted text-muted-foreground';
+      default:
+        return 'bg-muted text-muted-foreground';
+    }
+  };
+  
   return (
-    <span className={cn('status-chip', config.className, className)}>
+    <span className={cn(
+      'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
+      getStatusStyles(status),
+      className
+    )}>
       {config.label}
     </span>
   );

@@ -6,6 +6,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { PageLoader } from '@/components/PageLoader';
 import { PageTransition } from '@/components/PageTransition';
 import { DevModeBanner } from '@/components/DevModeBanner';
+import { UsernameWarningBanner } from '@/components/UsernameWarningBanner';
 
 // Lazy load heavy components for better code splitting
 const AppSidebar = lazy(() => import('@/components/AppSidebar').then(m => ({ default: m.AppSidebar })));
@@ -24,14 +25,15 @@ export const AppLayout = memo(function AppLayout() {
       </Suspense>
       <main
         className={cn(
-          'min-h-screen transition-all duration-200 ease-in-out pt-14',
+          'min-h-screen transition-all duration-200 ease-in-out pt-16',
           isMobile
             ? 'ml-0'
             : sidebarCollapsed
-              ? 'ml-sidebar-collapsed'
-              : 'ml-sidebar'
+              ? 'ml-[calc(var(--sidebar-collapsed-width)+2rem)]'
+              : 'ml-[calc(var(--sidebar-width)+2rem)]'
         )}
       >
+        <UsernameWarningBanner />
         <div className="page-container">
           <Suspense fallback={<PageLoader text="Loading page..." />}>
             <PageTransition>

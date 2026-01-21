@@ -6,7 +6,7 @@ import { useApp } from '@/contexts/AppContext';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { AuditorModeToggle } from '@/components/AuditorModeToggle';
+import { LiveIndicator } from '@/components/LiveIndicator';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,13 +16,15 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Search, Moon, Sun, Menu, LogOut, User, AtSign, Wallet } from 'lucide-react';
+import { Search, Moon, Sun, Menu, LogOut, User, AtSign, Wallet, Bell, Shield } from 'lucide-react';
 import { ensureUserInSupabase } from '@/lib/supabase';
 import { getUserByPrivyId } from '@/services/supabase/users';
 import { agentWalletService } from '@/services/wallets';
+import { useNotifications } from '@/contexts/NotificationContext';
+import { formatDistanceToNow } from 'date-fns';
 
 export const AppNavbar = memo(function AppNavbar() {
-  const { sidebarCollapsed, theme, toggleTheme, setMobileSidebarOpen, auditorMode, setAuditorMode } = useApp();
+  const { sidebarCollapsed, theme, toggleTheme, setMobileSidebarOpen } = useApp();
   const { user, logout } = usePrivy();
   const { wallets } = useWallets();
   const navigate = useNavigate();
@@ -30,6 +32,7 @@ export const AppNavbar = memo(function AppNavbar() {
   const [searchQuery, setSearchQuery] = useState('');
   const [username, setUsername] = useState<string | null>(null);
   const [agentBalance, setAgentBalance] = useState<number | null>(null);
+  const { notifications, unreadCount, markAllAsRead } = useNotifications();
 
   useEffect(() => {
     if (user) {
@@ -124,9 +127,9 @@ export const AppNavbar = memo(function AppNavbar() {
   return (
     <nav
       className={cn(
-        'fixed top-0 right-0 z-30 h-14 border-b bg-background transition-all duration-200 ease-in-out flex items-center gap-2 sm:gap-4',
-        'px-2 sm:px-4',
-        isMobile ? 'left-0' : sidebarCollapsed ? 'left-sidebar-collapsed' : 'left-sidebar'
+        'fixed top-0 right-0 z-30 h-16 border-b border-border/50 bg-background/95 backdrop-blur-sm transition-all duration-200 ease-in-out flex items-center gap-3 sm:gap-4',
+        'px-4 sm:px-6',
+        isMobile ? 'left-0' : sidebarCollapsed ? 'left-[calc(var(--sidebar-collapsed-width)+2rem)]' : 'left-[calc(var(--sidebar-width)+2rem)]'
       )}
     >
       {/* Mobile Menu Button */}
@@ -142,7 +145,7 @@ export const AppNavbar = memo(function AppNavbar() {
         </Button>
       )}
 
-      {/* Search Bar - Premium */}
+      {/* Search Bar - Stripe-style */}
       <form onSubmit={handleSearch} className="flex-1 max-w-md">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
@@ -151,51 +154,136 @@ export const AppNavbar = memo(function AppNavbar() {
             placeholder="Search..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 w-full bg-background-elevated border-border-subtle focus-visible:bg-background"
+            className="pl-9 w-full bg-background border-border/50 focus-visible:border-border focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
       </form>
 
-      {/* Agent Balance Display */}
+      {/* Agent Balance Display - Stripe-style pill */}
       {!isMobile && agentBalance !== null && (
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-primary/10 border border-primary/20">
-          <Wallet className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">
-            Agent: {agentBalance.toFixed(2)} USDC
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[hsl(var(--success))]/12 border-0">
+          <Wallet className="h-3.5 w-3.5 text-[hsl(var(--success))]" />
+          <span className="text-xs font-medium text-[hsl(var(--success))]">
+            {agentBalance.toFixed(2)} USDC
           </span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            onClick={() => loadAgentBalance()}
-            title="Refresh balance"
-          >
-            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </Button>
         </div>
       )}
 
-      {/* Auditor Mode Toggle */}
+      {/* Notification Bell */}
       {!isMobile && (
-        <AuditorModeToggle enabled={auditorMode} onToggle={setAuditorMode} />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 shrink-0 relative"
+              aria-label="Notifications"
+            >
+              <Bell className="h-4 w-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-80" align="end" forceMount>
+            <DropdownMenuLabel className="flex items-center justify-between">
+              <span>Notifications</span>
+              {unreadCount > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={markAllAsRead}
+                  className="h-6 text-xs"
+                >
+                  Mark all read
+                </Button>
+              )}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {notifications.length === 0 ? (
+              <div className="p-4 text-center text-sm text-muted-foreground">
+                No notifications yet
+              </div>
+            ) : (
+              <div className="max-h-96 overflow-y-auto">
+                {notifications.slice(0, 10).map((notif) => (
+                  <DropdownMenuItem
+                    key={notif.id}
+                    className={cn(
+                      'flex flex-col items-start gap-1 p-3 cursor-pointer',
+                      !notif.read && 'bg-primary/5'
+                    )}
+                    onClick={() => {
+                      if (notif.explorerUrl) {
+                        window.open(notif.explorerUrl, '_blank');
+                      }
+                    }}
+                  >
+                    <div className="flex items-center justify-between w-full">
+                      <span className="font-medium text-sm">{notif.title}</span>
+                      {!notif.read && (
+                        <span className="h-2 w-2 rounded-full bg-primary" />
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {notif.message}
+                    </span>
+                    {notif.txHash && (
+                      <span className="text-xs text-primary hover:underline">
+                        View tx: {notif.txHash.slice(0, 10)}...
+                      </span>
+                    )}
+                    <span className="text-xs text-muted-foreground">
+                      {formatDistanceToNow(new Date(notif.timestamp), { addSuffix: true })}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </div>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
 
-      {/* Theme Toggle */}
+      {/* Live Indicator */}
+      {!isMobile && (
+        <LiveIndicator />
+      )}
+
+      {/* Theme Toggle - Stripe-style */}
       <Button
         variant="ghost"
         size="icon"
         onClick={toggleTheme}
-        className="h-9 w-9 shrink-0 touch-manipulation"
+        className="h-9 w-9 shrink-0 touch-manipulation hover:bg-muted/50"
         aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
       >
         {theme === 'light' ? (
-          <Moon className="h-4 w-4" />
+          <Moon className="h-4 w-4 text-muted-foreground" />
         ) : (
-          <Sun className="h-4 w-4" />
+          <Sun className="h-4 w-4 text-muted-foreground" />
         )}
       </Button>
+
+      {/* Gasless Transfer Indicator */}
+      {!isMobile && user && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[hsl(var(--success))]/12 border-0">
+          <Shield className="h-3.5 w-3.5 text-[hsl(var(--success))]" />
+          <span className="text-xs font-medium text-[hsl(var(--success))]">
+            Gasless Transfer Active
+          </span>
+        </div>
+      )}
+
+      {/* Wallet Address Display */}
+      {!isMobile && user?.wallet?.address && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted/50 border border-border/50">
+          <span className="text-xs font-mono text-muted-foreground">
+            {user.wallet.address.slice(0, 6)}...{user.wallet.address.slice(-4)}
+          </span>
+        </div>
+      )}
 
       {/* User Menu */}
       <DropdownMenu>

@@ -26,14 +26,14 @@ guardsRouter.patch('/:id', (req, res) => {
   if (!guard) {
     return res.status(404).json({ error: 'Guard not found' });
   }
-  
+
   const updates = req.body;
   const updatedGuard: GuardConfig = {
     ...guard,
     ...updates,
     config: { ...guard.config, ...updates.config },
   };
-  
+
   storage.saveGuard(updatedGuard);
   res.json(updatedGuard);
 });
@@ -41,11 +41,11 @@ guardsRouter.patch('/:id', (req, res) => {
 // Simulate guard policy
 guardsRouter.post('/simulate', async (req, res) => {
   const { amount, recipient } = req.body;
-  
+
   if (typeof amount !== 'number') {
     return res.status(400).json({ error: 'Amount is required' });
   }
-  
+
   // Create a temporary intent for simulation
   const tempIntent: any = {
     id: 'temp',
@@ -61,10 +61,10 @@ guardsRouter.post('/simulate', async (req, res) => {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  
+
   const guardResults = await checkGuards(tempIntent);
   const passed = guardResults.every(r => r.passed);
-  
+
   res.json({
     passed,
     results: guardResults.map(r => ({
@@ -78,18 +78,18 @@ guardsRouter.post('/simulate', async (req, res) => {
 // Get blast radius for guard changes
 guardsRouter.get('/blast-radius', (req, res) => {
   const { guardId } = req.query;
-  
+
   const guard = guardId ? storage.getGuard(guardId as string) : null;
   const agents = storage.getAllAgents();
   const intents = storage.getAllPaymentIntents();
-  
+
   // Calculate affected agents (mock logic)
   const affectedAgents = agents.slice(0, 3).map(agent => ({
     agentId: agent.id,
     agentName: agent.name,
     impact: (['high', 'medium', 'low'] as const)[Math.floor(Math.random() * 3)],
   }));
-  
+
   // Calculate affected tools (mock)
   const toolUsage = new Map<string, number>();
   intents.forEach(intent => {
@@ -98,13 +98,13 @@ guardsRouter.get('/blast-radius', (req, res) => {
       toolUsage.set(toolName, (toolUsage.get(toolName) || 0) + 1);
     }
   });
-  
+
   const affectedTools = Array.from(toolUsage.entries()).map(([toolName, count]) => ({
     toolId: `tool_${toolName}`,
     toolName,
     usageCount: count,
   }));
-  
+
   // Calculate daily exposure
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -114,21 +114,21 @@ guardsRouter.get('/blast-radius', (req, res) => {
   });
   const currentDailySpend = todayTxs.reduce((sum, i) => sum + i.amount, 0);
   const estimatedDailyExposure = guard?.config.limit || 3000;
-  
+
   const blastRadius: BlastRadius = {
     affectedAgents,
     affectedTools,
     estimatedDailyExposure,
     currentDailySpend,
   };
-  
+
   res.json(blastRadius);
 });
 
 // Parse English policy text into guard rules
 guardsRouter.post('/', async (req, res) => {
   const { policyText } = req.body;
-  
+
   if (!policyText || typeof policyText !== 'string') {
     return res.status(400).json({ error: 'policyText is required' });
   }
@@ -182,8 +182,8 @@ guardsRouter.post('/', async (req, res) => {
         {
           scenario: `Payment of $${(parsedRules.perTxLimit?.limit || 1000) * 0.5} to vendor`,
           result: parsedRules.perTxLimit && (parsedRules.perTxLimit.limit * 0.5) > parsedRules.perTxLimit.limit ? 'block' : 'allow',
-          reason: parsedRules.perTxLimit && (parsedRules.perTxLimit.limit * 0.5) > parsedRules.perTxLimit.limit 
-            ? `Exceeds per-transaction limit of $${parsedRules.perTxLimit.limit}` 
+          reason: parsedRules.perTxLimit && (parsedRules.perTxLimit.limit * 0.5) > parsedRules.perTxLimit.limit
+            ? `Exceeds per-transaction limit of $${parsedRules.perTxLimit.limit}`
             : 'Within limits',
         },
         {
@@ -213,9 +213,9 @@ guardsRouter.post('/', async (req, res) => {
           },
           body: JSON.stringify({ policyText }),
         });
-        
+
         if (response.ok) {
-          const result = await response.json();
+          const result = await response.json() as any;
           parsedRules = result.parsedRules;
           preview = result.preview;
         } else {
@@ -231,7 +231,7 @@ guardsRouter.post('/', async (req, res) => {
 
     // Create guard config from parsed rules
     const policyId = `policy_${Date.now()}`;
-    
+
     res.json({
       policyId,
       parsedRules,
@@ -239,9 +239,9 @@ guardsRouter.post('/', async (req, res) => {
     });
   } catch (error) {
     console.error('Policy parse error:', error);
-    res.status(500).json({ 
-      error: 'Failed to parse policy', 
-      details: error instanceof Error ? error.message : 'Unknown error' 
+    res.status(500).json({
+      error: 'Failed to parse policy',
+      details: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
@@ -249,7 +249,7 @@ guardsRouter.post('/', async (req, res) => {
 // Evaluate a payment against guard policy
 guardsRouter.post('/evaluate', async (req, res) => {
   const { amount, target, token } = req.body;
-  
+
   if (typeof amount !== 'number' || !target) {
     return res.status(400).json({ error: 'amount and target are required' });
   }
@@ -273,7 +273,7 @@ guardsRouter.post('/evaluate', async (req, res) => {
   const guardResults = await checkGuards(tempIntent);
   const allPassed = guardResults.every(r => r.passed);
   const blockingGuards = guardResults.filter(r => !r.passed);
-  
+
   // Determine decision
   let decision: 'allow' | 'block' | 'require_approval' = 'allow';
   const reasons: string[] = [];

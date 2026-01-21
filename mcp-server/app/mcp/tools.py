@@ -55,7 +55,8 @@ class PayRecipientTool(BaseTool):
                 "from_wallet_id": {"type": "string", "description": "Source wallet ID"},
                 "to_address": {"type": "string", "description": "Recipient blockchain address"},
                 "amount": {"type": "string", "description": "Amount to send as a numeric string"},
-                "currency": {"type": "string", "description": "Currency code (default: USD)", "default": "USD"}
+                "currency": {"type": "string", "description": "Currency code (default: USD)", "default": "USD"},
+                "destination_chain": {"type": "string", "description": "Destination blockchain network for cross-chain transfers (e.g., BASE, ETH, MATIC). If not provided, same-chain transfer is assumed."}
             },
             "required": ["from_wallet_id", "to_address", "amount"]
         }
