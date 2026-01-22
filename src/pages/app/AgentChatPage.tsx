@@ -47,6 +47,11 @@ const ChatMessageItem = memo(({ message, index }: { message: ChatMessage; index:
       : null;
   }, [paymentLinkCall]);
 
+  // Extract checkout data from message (set by tool call handler)
+  const checkoutData = useMemo(() => {
+    return (message as any).checkoutData;
+  }, [message]);
+
   const formattedTime = useMemo(
     () => formatDistanceToNow(new Date(message.timestamp), { addSuffix: true }),
     [message.timestamp]
@@ -114,6 +119,55 @@ const ChatMessageItem = memo(({ message, index }: { message: ChatMessage; index:
                   <ExternalLink className="h-3 w-3" />
                 </Button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {checkoutData && checkoutData.checkoutUrl && (
+          <div className="mt-3">
+            <div className="rounded-md border border-border bg-background p-3 space-y-3">
+              <p className="text-xs font-medium">
+                {checkoutData.qrCode ? 'QR Payment Link Created:' : 'Checkout Payment Link Created:'}
+              </p>
+              
+              {checkoutData.qrCode && (
+                <div className="flex justify-center">
+                  <img 
+                    src={checkoutData.qrCode} 
+                    alt="Payment QR Code" 
+                    className="w-48 h-48 border border-border rounded"
+                  />
+                </div>
+              )}
+              
+              <div className="flex items-center gap-2">
+                <code className="text-xs font-mono flex-1 break-all">
+                  {checkoutData.checkoutUrl}
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5"
+                  onClick={() => {
+                    navigator.clipboard.writeText(checkoutData.checkoutUrl);
+                    toast.success('Checkout link copied!');
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-5 w-5"
+                  onClick={() => window.open(checkoutData.checkoutUrl, '_blank')}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                </Button>
+              </div>
+              
+              <p className="text-xs text-muted-foreground">
+                Amount: {checkoutData.amount} {checkoutData.currency || 'USDC'}
+              </p>
             </div>
           </div>
         )}
@@ -528,6 +582,84 @@ export default function AgentChatPage() {
         response.toolCalls.forEach((call) => {
           const timestamp = new Date().toISOString().substring(11, 19);
           
+          // Handle checkout tool calls specially
+          if (call.tool === 'generate_checkout_link' || call.tool === 'generate_checkout_qr') {
+            const output = call.output as any;
+            
+            if (output && output.success && output.checkoutUrl) {
+              // Log technical details to terminal
+              const logContent = `[${timestamp}] ✓ ${call.tool.replace(/_/g, ' ')}\n\nRequest:\n${JSON.stringify(call.input, null, 2)}\n\nResponse:\n${JSON.stringify(output, null, 2)}`;
+              
+              setTerminalLogs((prev) => [
+                ...prev,
+                {
+                  id: `term_tool_${Date.now()}_${Math.random()}`,
+                  timestamp: new Date(),
+                  type: 'output',
+                  content: logContent,
+                },
+              ]);
+              
+              // Update assistant message to show checkout link/QR
+              setMessages((prev) => {
+                const lastMessage = prev[prev.length - 1];
+                if (lastMessage && lastMessage.role === 'assistant') {
+                  const checkoutMessage = call.tool === 'generate_checkout_qr' && output.qrCode
+                    ? `${lastMessage.content}\n\n✅ QR payment link created. Scan to pay ${output.amount} ${output.currency || 'USDC'}.`
+                    : `${lastMessage.content}\n\n✅ Payment link created. Share this link to receive ${output.amount} ${output.currency || 'USDC'}.`;
+                  
+                  return prev.map((msg, idx) => 
+                    idx === prev.length - 1
+                      ? {
+                          ...msg,
+                          content: checkoutMessage,
+                          checkoutData: {
+                            checkoutUrl: output.checkoutUrl,
+                            sessionId: output.sessionId,
+                            qrCode: output.qrCode,
+                            amount: output.amount,
+                            currency: output.currency,
+                          },
+                        }
+                      : msg
+                  );
+                }
+                return prev;
+              });
+            } else if (output && output.error) {
+              // Handle error case
+              const logContent = `[${timestamp}] ✗ ${call.tool.replace(/_/g, ' ')}\n\nError: ${output.error}\n${output.message ? `Message: ${output.message}` : ''}`;
+              
+              setTerminalLogs((prev) => [
+                ...prev,
+                {
+                  id: `term_tool_${Date.now()}_${Math.random()}`,
+                  timestamp: new Date(),
+                  type: 'error',
+                  content: logContent,
+                },
+              ]);
+              
+              // Update assistant message to show error
+              setMessages((prev) => {
+                const lastMessage = prev[prev.length - 1];
+                if (lastMessage && lastMessage.role === 'assistant') {
+                  return prev.map((msg, idx) => 
+                    idx === prev.length - 1
+                      ? {
+                          ...msg,
+                          content: `${msg.content}\n\n⚠️ Automatic checkout failed. ${output.message || output.error}. You can manually create a payment intent from the Payment Intents page.`,
+                        }
+                      : msg
+                  );
+                }
+                return prev;
+              });
+            }
+            return; // Skip default logging for checkout tools
+          }
+          
+          // Default tool call logging for other tools
           // Format tool output for terminal
           let outputContent = 'No output';
           if (call.output) {
@@ -635,6 +767,9 @@ export default function AgentChatPage() {
             if (executeResult.success) {
               // Invalidate transactions query to refresh the list
               queryClient.invalidateQueries({ queryKey: ['transactions'] });
+              
+              // Dispatch event to refresh balance in navbar
+              window.dispatchEvent(new CustomEvent('balance-updated'));
               
               // Update status message
               setMessages((prev) => {
@@ -784,6 +919,9 @@ export default function AgentChatPage() {
               if (status.step === 'completed' && status.technicalDetails?.output) {
                 // Invalidate transactions query to refresh the list
                 queryClient.invalidateQueries({ queryKey: ['transactions'] });
+                
+                // Dispatch event to refresh balance in navbar
+                window.dispatchEvent(new CustomEvent('balance-updated'));
                 
                 const output = status.technicalDetails.output as any;
                 const txHash = output.tx_hash || output.blockchain_tx;

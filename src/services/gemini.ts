@@ -191,6 +191,50 @@ const paymentTools: FunctionDeclaration[] = [
       required: ['amount', 'recipientWallet'],
     },
   },
+  {
+    name: 'generate_checkout_link',
+    description: 'Generate an ArcPay checkout payment link (URL) for receiving payments. Use this when the user asks to "generate a payment link", "create checkout", or "generate checkout link". Returns a shareable checkout URL.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        amount: {
+          type: SchemaType.NUMBER,
+          description: 'Amount in USDC to receive',
+        },
+        currency: {
+          type: SchemaType.STRING,
+          description: 'Currency (defaults to USDC)',
+        },
+        description: {
+          type: SchemaType.STRING,
+          description: 'Optional payment description',
+        },
+      },
+      required: ['amount'],
+    },
+  },
+  {
+    name: 'generate_checkout_qr',
+    description: 'Generate an ArcPay checkout payment link with QR code for receiving payments. Use this when the user asks to "generate qr payment link", "create qr checkout", or "generate qr code". Returns a shareable checkout URL and QR code image.',
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        amount: {
+          type: SchemaType.NUMBER,
+          description: 'Amount in USDC to receive',
+        },
+        currency: {
+          type: SchemaType.STRING,
+          description: 'Currency (defaults to USDC)',
+        },
+        description: {
+          type: SchemaType.STRING,
+          description: 'Optional payment description',
+        },
+      },
+      required: ['amount'],
+    },
+  },
 ];
 
 /**
@@ -622,6 +666,54 @@ async function executeToolCall(
           } : undefined,
         });
 
+      case 'generate_checkout_link':
+        // Call the checkout API endpoint
+        const checkoutLinkResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/checkout/link`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Privy-User-Id': privyUserId || '',
+          },
+          body: JSON.stringify({
+            amount: args.amount as number,
+            currency: (args.currency as string) || 'USDC',
+            description: args.description as string,
+          }),
+        });
+
+        if (!checkoutLinkResponse.ok) {
+          const errorData = await checkoutLinkResponse.json();
+          return {
+            error: errorData.message || 'Failed to create checkout link',
+          };
+        }
+
+        return await checkoutLinkResponse.json();
+
+      case 'generate_checkout_qr':
+        // Call the checkout QR API endpoint
+        const checkoutQRResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/checkout/qr`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Privy-User-Id': privyUserId || '',
+          },
+          body: JSON.stringify({
+            amount: args.amount as number,
+            currency: (args.currency as string) || 'USDC',
+            description: args.description as string,
+          }),
+        });
+
+        if (!checkoutQRResponse.ok) {
+          const errorData = await checkoutQRResponse.json();
+          return {
+            error: errorData.message || 'Failed to create QR payment link',
+          };
+        }
+
+        return await checkoutQRResponse.json();
+
       default:
         return { error: `Unknown tool: ${toolName}` };
     }
@@ -699,7 +791,9 @@ BALANCE REPORTING FORMAT:
 When reporting wallet balances from check_balance tool results:
 - Extract the balance information from the tool output
 - Format as: "You have [privyWallet balance] USDC as balance and [circleAgentWallet balance] USDC as agent AI balance"
-- Round numbers to whole numbers (e.g., 83.42 → 83, 0.97 → 1)
+- For balances >= 1 USDC: Round to whole numbers (e.g., 83.42 → 83, 1.97 → 2)
+- For balances < 1 USDC: Show at least 2 decimal places (e.g., 0.465 → 0.47, 0.123 → 0.12, 0.001 → 0.001)
+- NEVER round small balances (< 1 USDC) to 0 - always show the actual decimal value
 - Do NOT show JSON, wallet addresses, or any technical details
 - Keep it simple and human-friendly
 

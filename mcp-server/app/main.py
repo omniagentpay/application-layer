@@ -9,6 +9,16 @@ import structlog
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.lifecycle import startup_event, shutdown_event
+from app.core.rate_limit import (
+    limiter,
+    abuse_detection_middleware,
+    general_limiter,
+    strict_limiter,
+    user_limiter,
+    rate_limit_handler,
+)
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.errors import RateLimitExceeded
 from app.mcp.router import router as mcp_router
 from app.webhooks.circle import router as circle_webhook_router
 import app.mcp.tools    # Register payment tools
@@ -27,6 +37,16 @@ app = FastAPI(
     lifespan=lifespan,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
+
+# Add rate limiting middleware
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# Abuse detection middleware (must be early in the chain)
+@app.middleware("http")
+async def abuse_detection_wrapper(request: Request, call_next):
+    return await abuse_detection_middleware(request, call_next)
 
 # Middleware for Correlation ID and Request Logging
 @app.middleware("http")
@@ -54,7 +74,11 @@ async def add_process_time_header(request: Request, call_next):
 # Global Exception Handler for Production Hardening
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    from app.core.rate_limit import track_failed_request
+    
     logger.error("unhandled_exception", error=str(exc), path=request.url.path)
+    track_failed_request(request, f"exception_{type(exc).__name__}")
+    
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "An internal server error occurred. Please contact support."},

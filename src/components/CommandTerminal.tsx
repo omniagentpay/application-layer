@@ -232,6 +232,56 @@ Connected via Privy — execution handled by backend agents.`
           );
         }
 
+      case 'list':
+        // Handle "list tr" or "list transactions"
+        if (args.length > 0 && (args[0] === 'tr' || args[0] === 'transactions')) {
+          try {
+            const limit = args[1] ? parseInt(args[1], 10) : undefined;
+            const transactions = await paymentsService.getTransactions({ limit: limit || 10 });
+            // Return as JSON array for "list tr" command
+            return formatOutput('payment-agent-01', 'list', JSON.stringify(transactions.map(tx => ({
+              id: tx.id,
+              intentId: tx.intentId,
+              amount: tx.amount,
+              currency: tx.currency,
+              recipient: tx.recipientAddress,
+              status: tx.status,
+              txHash: tx.txHash,
+              createdAt: tx.createdAt,
+            })), null, 2));
+          } catch (error) {
+            return formatOutput(
+              'payment-agent-01',
+              'list',
+              `Error: ${error instanceof Error ? error.message : 'Failed to fetch transactions'}`
+            );
+          }
+        }
+        return formatOutput('payment-agent-01', 'list', 'Usage: list tr [limit]\nExample: list tr 10');
+
+      case 'tr':
+        try {
+          const limit = args.length > 0 ? parseInt(args[0], 10) : 10;
+          const transactions = await paymentsService.getTransactions({ limit });
+          // Return as JSON array
+          return formatOutput('payment-agent-01', 'tr', JSON.stringify(transactions.map(tx => ({
+            id: tx.id,
+            intentId: tx.intentId,
+            amount: tx.amount,
+            currency: tx.currency,
+            recipient: tx.recipientAddress,
+            status: tx.status,
+            txHash: tx.txHash,
+            createdAt: tx.createdAt,
+          })), null, 2));
+        } catch (error) {
+          return formatOutput(
+            'payment-agent-01',
+            'tr',
+            `Error: ${error instanceof Error ? error.message : 'Failed to fetch transactions'}`
+          );
+        }
+
       case 'simulate': {
         if (args.length < 3) {
           return formatOutput(

@@ -31,26 +31,8 @@ export const AppNavbar = memo(function AppNavbar() {
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState('');
   const [username, setUsername] = useState<string | null>(null);
-  const [agentBalance, setAgentBalance] = useState<number | null>(null);
+  const [agentBalance, setAgentBalance] = useState<number | null>(null); // null = loading, number = loaded (can be 0)
   const { notifications, unreadCount, markAllAsRead } = useNotifications();
-
-  useEffect(() => {
-    if (user) {
-      loadUsername();
-      loadAgentBalance();
-    }
-  }, [user, wallets]);
-
-  // Refresh balance periodically
-  useEffect(() => {
-    if (!user?.id) return;
-    
-    const interval = setInterval(() => {
-      loadAgentBalance();
-    }, 30000); // Refresh every 30 seconds
-
-    return () => clearInterval(interval);
-  }, [user?.id]);
 
   const loadUsername = async () => {
     try {
@@ -71,29 +53,80 @@ export const AppNavbar = memo(function AppNavbar() {
     }
   };
 
-  const loadAgentBalance = async () => {
+  const loadAgentBalance = useCallback(async () => {
     if (!user?.id) return;
     
     try {
       console.log('[AppNavbar] Loading agent balance for user:', user.id);
+      // Add timestamp to prevent caching
       const balanceData = await agentWalletService.getAgentWalletBalance(user.id);
       console.log('[AppNavbar] Balance data received:', balanceData);
       
-      const balance = balanceData.balance;
-      setAgentBalance(balance);
+      // Ensure balance is a valid number (including 0)
+      const balance = typeof balanceData.balance === 'number' && !isNaN(balanceData.balance) 
+        ? balanceData.balance 
+        : 0; // Default to 0 instead of null so balance always displays
       
-      // Log warning if balance fetch had errors
+      // Always update balance (even if 0) - this ensures the display stays visible
+      setAgentBalance(balance);
+      console.log('[AppNavbar] Balance updated to:', balance, 'USDC, Wallet ID:', balanceData.walletId);
+      
+      // Log warnings but don't prevent balance update
       if ((balanceData as any).error || (balanceData as any).warning) {
         const errorMsg = (balanceData as any).error || (balanceData as any).warning;
         console.warn('[AppNavbar] Balance fetch warning:', errorMsg);
         console.warn('[AppNavbar] Wallet ID:', balanceData.walletId);
       }
     } catch (error) {
-      // Log error but don't show to user - wallet might not exist yet
+      // Log error but don't clear balance - might be temporary network issue
       console.error('[AppNavbar] Failed to load agent balance:', error);
-      setAgentBalance(null);
+      // Only set to 0 if it's a permanent error (like wallet doesn't exist)
+      // Keep previous balance visible if it's just a temporary network issue
+      if (error instanceof Error && error.message.includes('404')) {
+        setAgentBalance(0); // Set to 0 instead of null so display stays visible
+      }
+      // For other errors, keep the current balance value (don't clear it)
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user) {
+      loadUsername();
+      loadAgentBalance();
+    }
+  }, [user, wallets, loadAgentBalance]);
+
+  // Refresh balance periodically and after payment operations
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    // Refresh immediately, then set up interval
+    loadAgentBalance();
+    
+    const interval = setInterval(() => {
+      loadAgentBalance();
+    }, 15000); // Refresh every 15 seconds (more frequent for accuracy)
+
+    return () => clearInterval(interval);
+  }, [user?.id, loadAgentBalance]);
+
+  // Listen for balance updates from payment operations
+  useEffect(() => {
+    const handleBalanceUpdate = () => {
+      loadAgentBalance();
+    };
+    
+    // Listen for custom events that indicate balance should be refreshed
+    window.addEventListener('payment-completed', handleBalanceUpdate);
+    window.addEventListener('payment-executed', handleBalanceUpdate);
+    window.addEventListener('balance-updated', handleBalanceUpdate);
+    
+    return () => {
+      window.removeEventListener('payment-completed', handleBalanceUpdate);
+      window.removeEventListener('payment-executed', handleBalanceUpdate);
+      window.removeEventListener('balance-updated', handleBalanceUpdate);
+    };
+  }, [loadAgentBalance]);
 
   const handleLogout = async () => {
     await logout();
@@ -160,11 +193,11 @@ export const AppNavbar = memo(function AppNavbar() {
       </form>
 
       {/* Agent Balance Display - Stripe-style pill */}
-      {!isMobile && agentBalance !== null && (
+      {!isMobile && user && (
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[hsl(var(--success))]/12 border-0">
           <Wallet className="h-3.5 w-3.5 text-[hsl(var(--success))]" />
           <span className="text-xs font-medium text-[hsl(var(--success))]">
-            {agentBalance.toFixed(2)} USDC
+            {agentBalance !== null && agentBalance !== undefined ? agentBalance.toFixed(2) : '...'} USDC
           </span>
         </div>
       )}

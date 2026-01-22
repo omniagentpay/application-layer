@@ -49,6 +49,14 @@ This directory contains comprehensive documentation for the OmniAgentPay platfor
 | **[START_SERVERS.md](../START_SERVERS.md)** | How to start all servers | Daily development |
 | **[MCP_INTEGRATION_STATUS.md](../MCP_INTEGRATION_STATUS.md)** | MCP integration guide | MCP setup and troubleshooting |
 
+### For Production Deployment
+
+| Document | Purpose | Best For |
+|----------|---------|----------|
+| **[PRODUCTION_DEPLOYMENT_GUIDE.md](./PRODUCTION_DEPLOYMENT_GUIDE.md)** | Complete production deployment guide | Deploying to production |
+| **[DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md)** | Step-by-step deployment checklist | Verifying deployment |
+| **[PRODUCTION_ARCHITECTURE.md](./PRODUCTION_ARCHITECTURE.md)** | Production architecture overview | Understanding production setup |
+
 ---
 
 ## 📊 Documentation by Audience
@@ -219,13 +227,25 @@ This directory contains comprehensive documentation for the OmniAgentPay platfor
 ### "I want to know what's NOT implemented"
 → Read [COMPREHENSIVE_IMPLEMENTATION_REPORT.md](./COMPREHENSIVE_IMPLEMENTATION_REPORT.md) - "Not Yet Implemented" section
 
+### "I want to deploy to production"
+→ Read [PRODUCTION_DEPLOYMENT_GUIDE.md](./PRODUCTION_DEPLOYMENT_GUIDE.md)
+
+### "I need a deployment checklist"
+→ Read [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md)
+
+### "I want to understand production architecture"
+→ Read [PRODUCTION_ARCHITECTURE.md](./PRODUCTION_ARCHITECTURE.md)
+
 ---
 
 ## 🔄 Documentation Updates
 
-This documentation is actively maintained. Last major update: **January 21, 2026**
+This documentation is actively maintained. Last major update: **January 22, 2026**
 
 ### Recent Updates
+- ✅ Added PRODUCTION_DEPLOYMENT_GUIDE.md (Jan 22, 2026)
+- ✅ Added DEPLOYMENT_CHECKLIST.md (Jan 22, 2026)
+- ✅ Added PRODUCTION_ARCHITECTURE.md (Jan 22, 2026)
 - ✅ Added COMPREHENSIVE_IMPLEMENTATION_REPORT.md (Jan 21, 2026)
 - ✅ Added IMPLEMENTATION_STATUS_SUMMARY.md (Jan 21, 2026)
 - ✅ Added SYSTEM_ARCHITECTURE_DIAGRAMS.md (Jan 21, 2026)

@@ -3,6 +3,8 @@ import { storage } from '../lib/storage.js';
 import { checkGuards, requiresApproval } from '../lib/guards.js';
 import { simulatePayment, executePayment } from '../lib/sdk-client.js';
 import { getAgentWalletId, validateWalletRole } from '../lib/agent-wallet.js';
+import { createArcPayCheckout } from '../lib/arcpay-client.js';
+import { generatePaymentQRCode } from '../lib/qr-generator.js';
 import type {
   PaymentIntent,
   PaymentStep,
@@ -367,6 +369,10 @@ paymentsRouter.post('/', async (req, res) => {
   const intentId = `pi_${Date.now()}`;
   const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
+  // Check if checkout link should be auto-generated
+  const generateCheckoutLink = req.body.generateCheckoutLink === true || req.body.checkoutMode === 'link';
+  const generateCheckoutQR = req.body.generateCheckoutQR === true || req.body.checkoutMode === 'qr';
+
   // Generate payment link URL if it's a payment link
   let paymentLinkData = paymentLink;
   if (intentType === 'payment_link' && !paymentLinkData?.url) {
@@ -424,6 +430,76 @@ paymentsRouter.post('/', async (req, res) => {
   };
 
   storage.savePaymentIntent(intent);
+
+  // Auto-generate ArcPay checkout link if requested
+  let checkoutResponse: { checkoutUrl?: string; sessionId?: string; qrCode?: string } = {};
+  if (generateCheckoutLink || generateCheckoutQR) {
+    try {
+      const checkout = await createArcPayCheckout({
+        amount: intent.amount,
+        currency: intent.currency || 'USDC',
+        description: intent.description || `Payment of ${intent.amount} ${intent.currency || 'USDC'}`,
+        userId: privyUserId || intent.metadata?.userId || 'unknown',
+        intentId: intent.id,
+      });
+
+      checkoutResponse.checkoutUrl = checkout.checkoutUrl;
+      checkoutResponse.sessionId = checkout.sessionId;
+
+      // Update intent with checkout information
+      intent.paymentLink = {
+        url: checkout.checkoutUrl,
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours default expiration
+        metadata: {
+          sessionId: checkout.sessionId,
+          type: generateCheckoutQR ? 'qr' : 'link',
+        },
+      };
+
+      // Generate QR code if requested
+      if (generateCheckoutQR) {
+        const qrCodeDataURL = await generatePaymentQRCode(checkout.checkoutUrl);
+        checkoutResponse.qrCode = qrCodeDataURL;
+        if (intent.paymentLink.metadata) {
+          intent.paymentLink.metadata.qrCode = qrCodeDataURL;
+        }
+      }
+
+      intent.updatedAt = new Date().toISOString();
+      storage.savePaymentIntent(intent);
+
+      // Persist to Supabase
+      try {
+        const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+        if (supabaseUrl && supabaseKey) {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(
+            supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+            supabaseKey
+          );
+
+          await supabase
+            .from('payment_intents')
+            .update({
+              checkout_url: checkout.checkoutUrl,
+              checkout_session_id: checkout.sessionId,
+              checkout_type: generateCheckoutQR ? 'qr' : 'link',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', intent.id);
+        }
+      } catch (dbError) {
+        console.error('[Create Intent] Failed to persist checkout to Supabase:', dbError);
+        // Continue - checkout link was created successfully
+      }
+    } catch (checkoutError) {
+      console.error('[Create Intent] Failed to generate checkout link:', checkoutError);
+      // Don't fail the intent creation if checkout generation fails
+      // The intent is still created successfully
+    }
+  }
   
   // Create a pending transaction record immediately when intent is created
   // This ensures transactions appear in the list even before execution completes
@@ -445,6 +521,13 @@ paymentsRouter.post('/', async (req, res) => {
       },
     };
     storage.saveTransaction(transaction);
+    console.log('[Create Intent] Saved transaction to in-memory storage:', {
+      transactionId: transaction.id,
+      intentId: transaction.intentId,
+      status: transaction.status,
+      amount: transaction.amount,
+      totalTransactions: storage.getAllTransactions().length,
+    });
     
     // Persist pending transaction to Supabase immediately
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -509,7 +592,20 @@ paymentsRouter.post('/', async (req, res) => {
     // Don't fail the request if transaction creation fails
   }
   
-  res.status(201).json(intent);
+  // Return intent with checkout information if generated
+  const response: any = { ...intent };
+  if (checkoutResponse.checkoutUrl) {
+    response.checkoutUrl = checkoutResponse.checkoutUrl;
+    response.sessionId = checkoutResponse.sessionId;
+    if (checkoutResponse.qrCode) {
+      response.qrCode = checkoutResponse.qrCode;
+    }
+    response.message = generateCheckoutQR
+      ? `QR payment link created. Scan to pay ${intent.amount} ${intent.currency || 'USDC'}.`
+      : `Payment link created. Share this link to receive ${intent.amount} ${intent.currency || 'USDC'}.`;
+  }
+  
+  res.status(201).json(response);
 });
 
 // Update payment intent (for payment link URL updates)
@@ -1602,6 +1698,292 @@ paymentsRouter.get('/:id/contract', (req, res) => {
   };
 
   res.json(contract);
+});
+
+// ==================== ARCPAY CHECKOUT ENDPOINTS ====================
+
+/**
+ * Generate hosted checkout link for a payment intent
+ * 
+ * POST /api/payments/:id/checkout/link
+ * 
+ * Creates an ArcPay checkout session and returns a shareable payment link.
+ * The link can be shared without exposing API keys.
+ */
+paymentsRouter.post('/:id/checkout/link', async (req, res) => {
+  const { id } = req.params;
+  const privyUserId = req.headers['x-privy-user-id'] as string || req.headers['X-Privy-User-Id'] as string;
+
+  const intent = storage.getPaymentIntent(id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  try {
+    // Create ArcPay checkout session
+    const { checkoutUrl, sessionId } = await createArcPayCheckout({
+      amount: intent.amount,
+      currency: intent.currency || 'USDC',
+      description: intent.description || `Payment of ${intent.amount} ${intent.currency || 'USDC'}`,
+      userId: privyUserId || intent.metadata?.userId || 'unknown',
+      intentId: intent.id,
+    });
+
+    // Update intent with checkout information
+    intent.paymentLink = {
+      url: checkoutUrl,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours default expiration
+      metadata: {
+        sessionId,
+        type: 'link',
+      },
+    };
+    intent.updatedAt = new Date().toISOString();
+    storage.savePaymentIntent(intent);
+
+    // Persist to Supabase
+    try {
+      const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+      if (supabaseUrl && supabaseKey) {
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabase = createClient(
+          supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+          supabaseKey
+        );
+
+        await supabase
+          .from('payment_intents')
+          .update({
+            checkout_url: checkoutUrl,
+            checkout_session_id: sessionId,
+            checkout_type: 'link',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', intent.id);
+      }
+    } catch (dbError) {
+      console.error('[Checkout Link] Failed to persist to Supabase:', dbError);
+      // Continue - checkout link was created successfully
+    }
+
+    res.json({
+      success: true,
+      checkoutUrl,
+      sessionId,
+      intentId: intent.id,
+      amount: intent.amount,
+      currency: intent.currency,
+      message: `Payment link created. Share this link to receive ${intent.amount} ${intent.currency || 'USDC'}.`,
+    });
+  } catch (error) {
+    console.error('[Checkout Link] Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to create checkout link';
+    
+    // Check if it's a missing API key error
+    if (errorMessage.includes('ARCPAY_API_KEY')) {
+      return res.status(500).json({
+        error: 'ArcPay not configured',
+        message: 'ARCPAY_API_KEY environment variable is required. Please configure ArcPay merchant account.',
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to create checkout link',
+      message: errorMessage,
+    });
+  }
+});
+
+/**
+ * Generate QR code payment link for a payment intent
+ * 
+ * POST /api/payments/:id/checkout/qr
+ * 
+ * Creates an ArcPay checkout session and generates a QR code.
+ * The QR code encodes the hosted checkout URL and is wallet-agnostic.
+ */
+paymentsRouter.post('/:id/checkout/qr', async (req, res) => {
+  const { id } = req.params;
+  const privyUserId = req.headers['x-privy-user-id'] as string || req.headers['X-Privy-User-Id'] as string;
+
+  const intent = storage.getPaymentIntent(id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  try {
+    // Create ArcPay checkout session (reuse same session if already exists)
+    let checkoutUrl = intent.paymentLink?.url;
+    let sessionId = intent.paymentLink?.metadata?.sessionId;
+
+    if (!checkoutUrl || !sessionId) {
+      const checkout = await createArcPayCheckout({
+        amount: intent.amount,
+        currency: intent.currency || 'USDC',
+        description: intent.description || `Payment of ${intent.amount} ${intent.currency || 'USDC'}`,
+        userId: privyUserId || intent.metadata?.userId || 'unknown',
+        intentId: intent.id,
+      });
+      checkoutUrl = checkout.checkoutUrl;
+      sessionId = checkout.sessionId;
+    }
+
+    // Generate QR code for checkout URL
+    const qrCodeDataURL = await generatePaymentQRCode(checkoutUrl);
+
+    // Update intent with checkout information
+    intent.paymentLink = {
+      url: checkoutUrl,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours default expiration
+      metadata: {
+        sessionId,
+        type: 'qr',
+        qrCode: qrCodeDataURL,
+      },
+    };
+    intent.updatedAt = new Date().toISOString();
+    storage.savePaymentIntent(intent);
+
+    // Persist to Supabase
+    try {
+      const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+      if (supabaseUrl && supabaseKey) {
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabase = createClient(
+          supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+          supabaseKey
+        );
+
+        await supabase
+          .from('payment_intents')
+          .update({
+            checkout_url: checkoutUrl,
+            checkout_session_id: sessionId,
+            checkout_type: 'qr',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', intent.id);
+      }
+    } catch (dbError) {
+      console.error('[Checkout QR] Failed to persist to Supabase:', dbError);
+      // Continue - QR code was generated successfully
+    }
+
+    res.json({
+      success: true,
+      checkoutUrl,
+      sessionId,
+      qrCode: qrCodeDataURL,
+      intentId: intent.id,
+      amount: intent.amount,
+      currency: intent.currency,
+      message: `QR payment link created. Scan to pay ${intent.amount} ${intent.currency || 'USDC'}.`,
+    });
+  } catch (error) {
+    console.error('[Checkout QR] Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to create QR payment link';
+    
+    // Check if it's a missing API key error
+    if (errorMessage.includes('ARCPAY_API_KEY')) {
+      return res.status(500).json({
+        error: 'ArcPay not configured',
+        message: 'ARCPAY_API_KEY environment variable is required. Please configure ArcPay merchant account.',
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to create QR payment link',
+      message: errorMessage,
+    });
+  }
+});
+
+/**
+ * Get checkout status for a payment intent
+ * 
+ * GET /api/payments/:id/checkout/status
+ * 
+ * Polls ArcPay API to get current checkout session status.
+ * Used to update payment intent status when payment is completed.
+ */
+paymentsRouter.get('/:id/checkout/status', async (req, res) => {
+  const { id } = req.params;
+
+  const intent = storage.getPaymentIntent(id);
+  if (!intent) {
+    return res.status(404).json({ error: 'Payment intent not found' });
+  }
+
+  const sessionId = intent.paymentLink?.metadata?.sessionId || intent.metadata?.checkoutSessionId;
+  if (!sessionId) {
+    return res.status(400).json({
+      error: 'No checkout session found',
+      message: 'This payment intent does not have an associated checkout session.',
+    });
+  }
+
+  try {
+    const { getArcPayClient } = await import('../lib/arcpay-client.js');
+    const client = getArcPayClient();
+    const session = await client.getCheckoutSessionStatus(sessionId);
+
+    // Update intent status based on checkout session status
+    if (session.status === 'paid' && intent.status !== 'succeeded') {
+      intent.status = 'succeeded';
+      intent.updatedAt = new Date().toISOString();
+      storage.savePaymentIntent(intent);
+
+      // Update Supabase
+      try {
+        const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+        const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+
+        if (supabaseUrl && supabaseKey) {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(
+            supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`,
+            supabaseKey
+          );
+
+          await supabase
+            .from('payment_intents')
+            .update({
+              status: 'succeeded',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', intent.id);
+        }
+      } catch (dbError) {
+        console.error('[Checkout Status] Failed to update Supabase:', dbError);
+      }
+    } else if (session.status === 'failed' && intent.status !== 'failed') {
+      intent.status = 'failed';
+      intent.updatedAt = new Date().toISOString();
+      storage.savePaymentIntent(intent);
+    } else if (session.status === 'expired' && intent.status !== 'expired') {
+      intent.status = 'expired';
+      intent.updatedAt = new Date().toISOString();
+      storage.savePaymentIntent(intent);
+    }
+
+    res.json({
+      sessionId,
+      status: session.status,
+      checkoutUrl: session.url,
+      intentStatus: intent.status,
+      lastChecked: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('[Checkout Status] Error:', error);
+    res.status(500).json({
+      error: 'Failed to check checkout status',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
 });
 
 

@@ -247,11 +247,11 @@ walletsRouter.get('/agent/balance', async (req, res) => {
       });
     }
 
-    // Check for duplicate active wallets and keep the one with 1 USDC, deactivate others
+    // Check for duplicate active wallets - always use the most recent one
     if (agentWallets && agentWallets.length > 1) {
-      console.warn(`[GET /api/wallets/agent/balance] Found ${agentWallets.length} active wallets for user ${user.id}. Checking balances to keep the correct one.`);
+      console.warn(`[GET /api/wallets/agent/balance] Found ${agentWallets.length} active wallets for user ${user.id}. Using the most recent wallet.`);
       
-      // Fetch balances for all wallets to determine which one to keep
+      // Fetch balances for all wallets to verify they're valid, but always use most recent
       const { callMcp } = await import('../lib/mcp-client.js');
       const walletsWithBalances = await Promise.all(
         agentWallets.map(async (wallet) => {
@@ -271,14 +271,15 @@ walletsRouter.get('/agent/balance', async (req, res) => {
         })
       );
       
-      // Find wallet with 1 USDC (or closest to 1), otherwise use most recent
-      // Prioritize wallets that successfully fetched balance over those with connection errors
+      // Always use the MOST RECENT wallet (first in array since ordered by created_at DESC)
+      // This ensures we always use the user's current/latest wallet, not an old one
+      // Prioritize wallets that successfully fetched balance, but still prefer most recent
       const walletsWithSuccessfulBalance = walletsWithBalances.filter(w => w.balanceError === null);
-      const walletWith1USDC = walletsWithSuccessfulBalance.find(w => Math.abs(w.balance - 1.0) < 0.01) || 
-                              walletsWithSuccessfulBalance.find(w => w.balance > 0) ||
-                              walletsWithBalances[0]; // Fallback to most recent if all failed
+      const walletToKeep = walletsWithSuccessfulBalance.length > 0 
+        ? walletsWithSuccessfulBalance[0] // Most recent wallet with successful balance fetch
+        : walletsWithBalances[0]; // Fallback to most recent even if balance fetch failed
       
-      const walletToKeep = walletWith1USDC || walletsWithBalances[0]; // Use 1 USDC wallet or most recent
+      console.log(`[GET /api/wallets/agent/balance] Selected wallet (most recent): ${walletToKeep.circle_wallet_id}, balance: ${walletToKeep.balance} USDC`);
       
       // Deactivate all other wallets
       const walletsToDeactivate = walletsWithBalances.filter(w => w.id !== walletToKeep.id);
@@ -653,14 +654,15 @@ walletsRouter.get('/agent', async (req, res) => {
         })
       );
       
-      // Find wallet with 1 USDC (or closest to 1), otherwise use most recent
-      // Prioritize wallets that successfully fetched balance over those with connection errors
+      // Always use the MOST RECENT wallet (first in array since ordered by created_at DESC)
+      // This ensures we always use the user's current/latest wallet, not an old one
+      // Prioritize wallets that successfully fetched balance, but still prefer most recent
       const walletsWithSuccessfulBalance = walletsWithBalances.filter(w => w.balanceError === null);
-      const walletWith1USDC = walletsWithSuccessfulBalance.find(w => Math.abs(w.balance - 1.0) < 0.01) || 
-                              walletsWithSuccessfulBalance.find(w => w.balance > 0) ||
-                              walletsWithBalances[0]; // Fallback to most recent if all failed
+      const walletToKeep = walletsWithSuccessfulBalance.length > 0 
+        ? walletsWithSuccessfulBalance[0] // Most recent wallet with successful balance fetch
+        : walletsWithBalances[0]; // Fallback to most recent even if balance fetch failed
       
-      const walletToKeep = walletWith1USDC || walletsWithBalances[0]; // Use 1 USDC wallet or most recent
+      console.log(`[GET /api/wallets/agent] Selected wallet (most recent): ${walletToKeep.circle_wallet_id}, balance: ${walletToKeep.balance} USDC`);
       
       // Deactivate all other wallets
       const walletsToDeactivate = walletsWithBalances.filter(w => w.id !== walletToKeep.id);

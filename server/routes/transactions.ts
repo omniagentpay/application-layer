@@ -67,6 +67,10 @@ transactionsRouter.get('/', async (req, res) => {
 
           if (error) {
             console.error('[GET /api/transactions] Supabase query error:', error);
+            // If error is "relation does not exist", the table hasn't been created yet
+            if (error.message?.includes('does not exist') || error.code === '42P01') {
+              console.log('[GET /api/transactions] Transactions table does not exist, falling back to in-memory storage');
+            }
           } else if (supabaseTransactions && supabaseTransactions.length > 0) {
             console.log('[GET /api/transactions] Found', supabaseTransactions.length, 'transactions in Supabase');
             
@@ -86,7 +90,7 @@ transactionsRouter.get('/', async (req, res) => {
               blockNumber: tx.block_number || undefined,
               fee: tx.fee || undefined,
               createdAt: tx.created_at || new Date().toISOString(),
-              metadata: tx.metadata || undefined,
+              metadata: typeof tx.metadata === 'string' ? JSON.parse(tx.metadata) : tx.metadata || undefined,
             }));
           } else {
             console.log('[GET /api/transactions] No transactions found in Supabase for user:', user.id);
@@ -97,12 +101,15 @@ transactionsRouter.get('/', async (req, res) => {
       }
     } catch (error) {
       console.error('[GET /api/transactions] Error loading from Supabase:', error);
+      // Continue to fallback
     }
 
-    // Fallback to in-memory storage if Supabase didn't return results
+    // Fallback to in-memory storage if Supabase didn't return results or returned empty
     if (transactions.length === 0) {
       console.log('[GET /api/transactions] Falling back to in-memory storage');
-      transactions = storage.getAllTransactions();
+      const allInMemoryTransactions = storage.getAllTransactions();
+      console.log('[GET /api/transactions] In-memory storage has', allInMemoryTransactions.length, 'transactions');
+      transactions = allInMemoryTransactions;
       
       // Apply filters
       const { walletId, status, startDate, endDate, limit } = req.query;

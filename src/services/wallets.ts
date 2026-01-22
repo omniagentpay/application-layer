@@ -200,11 +200,15 @@ export const agentWalletService = {
   async getAgentWalletBalance(privyUserId: string): Promise<{ balance: number; currency: string; walletId: string }> {
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
-      const response = await fetch(`${apiBaseUrl}/wallets/agent/balance`, {
+      // Add cache-busting query parameter to ensure fresh data
+      const cacheBuster = `?_t=${Date.now()}`;
+      const response = await fetch(`${apiBaseUrl}/wallets/agent/balance${cacheBuster}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
           'X-Privy-User-Id': privyUserId,
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
         },
       });
       

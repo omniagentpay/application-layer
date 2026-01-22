@@ -25,9 +25,19 @@ import { x402Router } from './routes/x402.js';
 import { invoiceRouter } from './routes/invoice.js';
 import { receiptsRouter } from './routes/receipts.js';
 import { pluginsRouter } from './routes/plugins.js';
+import { checkoutRouter } from './routes/checkout.js';
 import { getAgentWalletId } from './lib/agent-wallet.js';
 import { devAuthMiddleware, getDevAuthConfig } from './lib/dev-auth.js';
 import { randomUUID } from 'crypto';
+import {
+  generalLimiter,
+  strictLimiter,
+  userLimiter,
+  speedLimiter,
+  abuseDetectionMiddleware,
+  requestSizeLimiter,
+  trackFailedRequest,
+} from './lib/rate-limit.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -38,6 +48,13 @@ const isDevelopment = process.env.NODE_ENV !== 'production';
 
 // Compression middleware for faster responses
 app.use(compression());
+
+// Rate limiting and abuse protection middleware
+// Must be before other routes
+app.use(abuseDetectionMiddleware);
+app.use(generalLimiter);
+app.use(speedLimiter);
+app.use(requestSizeLimiter(1024 * 1024)); // 1MB max request size
 
 // Allowed origins list
 const allowedOrigins = [
@@ -93,7 +110,9 @@ if (isDevelopment) {
   });
 }
 
-app.use(express.json());
+// Body parser with size limit
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // PHASE 6: Correlation ID middleware - generate debugId for every request
 app.use((req, res, next) => {
@@ -119,22 +138,46 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// API Routes
-app.use('/api/payments', paymentsRouter);
-app.use('/api/intents', paymentsRouter); // Alias for payments
-app.use('/api/mcp', mcpRouter);
-app.use('/api/guards', guardsRouter);
-app.use('/api/transactions', transactionsRouter);
-app.use('/api/crosschain', crosschainRouter);
-app.use('/api/wallets', walletsRouter);
-app.use('/api/workspaces', workspacesRouter);
-app.use('/api/agents', agentsRouter);
-app.use('/api/ledger', ledgerRouter);
-app.use('/api/x402', x402Router);
-app.use('/api/invoice', invoiceRouter);
-app.use('/api/receipts', receiptsRouter);
-app.use('/api/plugins', pluginsRouter);
-app.use('/api/webhooks', pluginsRouter); // Webhooks are part of plugins router
+// API Routes with rate limiting
+// Sensitive endpoints (payments, wallets, transactions) use strict rate limiting
+app.use('/api/payments', strictLimiter, userLimiter, paymentsRouter);
+app.use('/api/intents', strictLimiter, userLimiter, paymentsRouter); // Alias for payments
+app.use('/api/mcp', strictLimiter, mcpRouter);
+app.use('/api/guards', userLimiter, guardsRouter);
+app.use('/api/transactions', userLimiter, transactionsRouter);
+app.use('/api/crosschain', strictLimiter, userLimiter, crosschainRouter);
+app.use('/api/wallets', strictLimiter, userLimiter, walletsRouter);
+app.use('/api/workspaces', userLimiter, workspacesRouter);
+app.use('/api/agents', userLimiter, agentsRouter);
+app.use('/api/ledger', userLimiter, ledgerRouter);
+app.use('/api/x402', strictLimiter, userLimiter, x402Router);
+app.use('/api/invoice', userLimiter, invoiceRouter);
+app.use('/api/receipts', userLimiter, receiptsRouter);
+app.use('/api/plugins', userLimiter, pluginsRouter);
+app.use('/api/webhooks', userLimiter, pluginsRouter); // Webhooks are part of plugins router
+app.use('/api/checkout', strictLimiter, userLimiter, checkoutRouter);
+
+// Error handling middleware (must be after all routes)
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // Track failed requests for abuse detection
+  const statusCode = res.statusCode || 500;
+  if (statusCode >= 400) {
+    trackFailedRequest(req, `http_error_${statusCode}`);
+  }
+
+  // Log error
+  if (isDevelopment) {
+    console.error('Error:', err);
+  }
+
+  // Send error response if not already sent
+  if (!res.headersSent) {
+    res.status(statusCode).json({
+      error: err.message || 'Internal server error',
+      details: isDevelopment ? err.stack : undefined,
+    });
+  }
+});
 
 // Check agent wallet configuration on startup
 const agentWalletId = getAgentWalletId();
@@ -144,6 +187,21 @@ if (!agentWalletId) {
   console.warn('   Run: python mcp-server/scripts/setup_agent_wallet.py');
 } else {
   console.log(`✅ Agent Circle wallet configured: ${agentWalletId}`);
+}
+
+// Check ArcPay API key configuration on startup
+const arcpayApiKey = process.env.ARCPAY_SECRET_KEY || process.env.ARCPAY_API_KEY;
+const arcpayBaseUrl = process.env.ARCPAY_BASE_URL || 'https://arcpay.systems';
+const arcpayEnv = process.env.ARCPAY_ENV || 'testnet';
+
+if (!arcpayApiKey) {
+  console.warn('⚠️  WARNING: ARCPAY_SECRET_KEY or ARCPAY_API_KEY not set in environment');
+  console.warn('   ArcPay checkout features will be disabled.');
+  console.warn('   Add ARCPAY_SECRET_KEY to your .env file to enable checkout link generation.');
+} else {
+  console.log(`✅ ArcPay API key configured: ${arcpayApiKey.substring(0, 15)}...`);
+  console.log(`✅ ArcPay Gateway URL: ${arcpayBaseUrl}`);
+  console.log(`✅ ArcPay Environment: ${arcpayEnv}`);
 }
 
 // Check dev auth bypass configuration
